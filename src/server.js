@@ -16,6 +16,7 @@ app.use(express.json());
 app.use(cors());
 
 const notificationRoutes = require('./routes/notificationRoutes');
+const reportRoutes = require('./routes/report.routes');
 
 // Basic route
 app.get('/', (req, res) => {
@@ -24,6 +25,7 @@ app.get('/', (req, res) => {
 
 // Mount Routes
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/reports', reportRoutes);
 
 const PORT = process.env.PORT || 5000;
 
