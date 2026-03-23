@@ -2,12 +2,21 @@ const mongoose = require("mongoose");
 
 const notificationSchema = new mongoose.Schema({
   userId: {
-    type: String, // later you can use ObjectId
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
     required: true
   },
   type: {
     type: String,
-    enum: ["NEW_ANSWER", "COMMENT", "BEST_ANSWER", "ANNOUNCEMENT"],
+    enum: ["answer", "comment", "best_answer", "report_update", "announcement"],
+    required: true
+  },
+  entityType: {
+    type: String,
+    required: true
+  },
+  entityId: {
+    type: mongoose.Schema.Types.ObjectId,
     required: true
   },
   message: {
@@ -23,5 +32,9 @@ const notificationSchema = new mongoose.Schema({
     default: Date.now
   }
 });
+
+// Indexes
+notificationSchema.index({ userId: 1, isRead: 1 });
+notificationSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model("Notification", notificationSchema);
