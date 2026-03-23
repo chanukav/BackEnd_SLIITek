@@ -16,7 +16,7 @@ router.route('/')
     .post(createNotification);
 
 // Specific user notifications
-router.route('/user/:userId')
+router.route('/user/:email')
     .get(getUserNotifications);
 
 // Specific notification operations

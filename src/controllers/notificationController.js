@@ -4,10 +4,11 @@ const mongoose = require('mongoose');
 // Create a new notification
 exports.createNotification = async (req, res) => {
     try {
-        const { userId, type, message, entityType, entityId } = req.body;
+        const { email, type, title, message, entityType, entityId } = req.body;
         const notification = new Notification({ 
-            userId, 
+            email, 
             type, 
+            title,
             message,
             entityType: entityType || 'System',
             entityId: entityId || new mongoose.Types.ObjectId().toString()
@@ -32,8 +33,8 @@ exports.getAllNotifications = async (req, res) => {
 // Get notifications for a specific user
 exports.getUserNotifications = async (req, res) => {
     try {
-        const { userId } = req.params;
-        const notifications = await Notification.find({ userId }).sort({ createdAt: -1 });
+        const { email } = req.params;
+        const notifications = await Notification.find({ email }).sort({ createdAt: -1 });
         res.status(200).json({ success: true, count: notifications.length, data: notifications });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
