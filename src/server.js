@@ -16,6 +16,7 @@ app.use(express.json());
 app.use(cors());
 
 const notificationRoutes = require('./routes/notificationRoutes');
+const sampleUserRoutes = require("./routes/sampleUserRoutes")
 
 // Basic route
 app.get('/', (req, res) => {
@@ -24,6 +25,7 @@ app.get('/', (req, res) => {
 
 // Mount Routes
 app.use('/api/notifications', notificationRoutes);
+app.use("/api/sample-users", sampleUserRoutes)
 
 const PORT = process.env.PORT || 5000;
 
