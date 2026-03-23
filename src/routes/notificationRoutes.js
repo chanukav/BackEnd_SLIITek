@@ -1,0 +1,26 @@
+const express = require('express');
+const {
+    createNotification,
+    getAllNotifications,
+    getUserNotifications,
+    markAsRead,
+    deleteNotification
+} = require('../controllers/notificationController');
+
+const router = express.Router();
+
+// Admin / general routes
+router.route('/')
+    .get(getAllNotifications)
+    .post(createNotification);
+
+// Specific user notifications
+router.route('/user/:userId')
+    .get(getUserNotifications);
+
+// Specific notification operations
+router.route('/:id')
+    .put(markAsRead)
+    .delete(deleteNotification);
+
+module.exports = router;

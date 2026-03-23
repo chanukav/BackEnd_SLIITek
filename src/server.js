@@ -15,11 +15,15 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
+const notificationRoutes = require('./routes/notificationRoutes');
+
 // Basic route
 app.get('/', (req, res) => {
     res.send('API is running...');
 });
 
+// Mount Routes
+app.use('/api/notifications', notificationRoutes);
 
 const PORT = process.env.PORT || 5000;
 
