@@ -1,10 +1,17 @@
 const Notification = require('../models/Notification');
+const mongoose = require('mongoose');
 
 // Create a new notification
 exports.createNotification = async (req, res) => {
     try {
-        const { userId, type, message } = req.body;
-        const notification = new Notification({ userId, type, message });
+        const { userId, type, message, entityType, entityId } = req.body;
+        const notification = new Notification({ 
+            userId, 
+            type, 
+            message,
+            entityType: entityType || 'System',
+            entityId: entityId || new mongoose.Types.ObjectId().toString()
+        });
         await notification.save();
         res.status(201).json({ success: true, data: notification });
     } catch (error) {
@@ -40,7 +47,27 @@ exports.markAsRead = async (req, res) => {
         const notification = await Notification.findByIdAndUpdate(
             id,
             { isRead: true },
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
+        );
+
+        if (!notification) {
+            return res.status(404).json({ success: false, message: "Notification not found" });
+        }
+
+        res.status(200).json({ success: true, data: notification });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// Mark notification as unread
+exports.markAsUnread = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const notification = await Notification.findByIdAndUpdate(
+            id,
+            { isRead: false },
+            { returnDocument: 'after', runValidators: true }
         );
 
         if (!notification) {

@@ -2,8 +2,7 @@ const mongoose = require("mongoose");
 
 const notificationSchema = new mongoose.Schema({
   userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
+    type: String, // Kept as String to support "global" and non-ObjectId types
     required: true
   },
   type: {
@@ -16,7 +15,7 @@ const notificationSchema = new mongoose.Schema({
     required: true
   },
   entityId: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: String, // Changed to String for flexibility
     required: true
   },
   message: {
