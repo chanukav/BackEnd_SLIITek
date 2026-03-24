@@ -44,6 +44,14 @@ const reportSchema = new mongoose.Schema({
   reviewedAt: {
     type: Date,
     default: null
+  },
+  autoFlagged: {
+    type: Boolean,
+    default: false
+  },
+  moderationNotes: {
+    type: String,
+    default: ""
   }
 });
 
@@ -51,5 +59,6 @@ const reportSchema = new mongoose.Schema({
 reportSchema.index({ status: 1 });
 reportSchema.index({ targetType: 1, targetId: 1 });
 reportSchema.index({ createdAt: -1 });
+reportSchema.index({ targetType: 1, targetId: 1, reportedBy: 1 }, { unique: true });
 
 module.exports = mongoose.model("Report", reportSchema);
