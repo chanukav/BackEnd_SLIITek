@@ -10,69 +10,20 @@ const {
   checkWhatsAppOtp,
 } = require("../utils/twilioVerify");
 
-// Email pattern examples:
-// USER    -> IT12345@my.sliit.lk
-// ADMIN   -> admin.it@sliit.lk
-// MANAGER -> manager.biz@sliit.lk
-
-const getRoleAndFacultyFromEmail = (email) => {
+const getEmailCategory = (email) => {
   const normalizedEmail = email.toLowerCase().trim();
-
-  // ================= USER EMAIL FORMAT =================
-  // Example: IT12345@my.sliit.lk
-  const userEmailRegex = /^it\d{5}@my\.sliit\.lk$/;
+  const userEmailRegex = /^it\d+@my\.sliit\.lk$/;
+  const standardEmailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   if (userEmailRegex.test(normalizedEmail)) {
-    return {
-      valid: true,
-      role: "user",
-      facultyFromEmail: null,
-      normalizedEmail,
-    };
+    return { normalizedEmail, category: "user" };
   }
 
-  // ================= ADMIN / MANAGER EMAIL FORMAT =================
-  // Examples:
-  // admin.it@sliit.lk
-  // manager.biz@sliit.lk
-  const staffEmailRegex = /^(admin|manager)\.([a-z]+)@([a-z0-9-]+\.)?sliit\.lk$/;
-
-  if (!staffEmailRegex.test(normalizedEmail)) {
-    return {
-      valid: false,
-      message:
-        "Invalid email format. Users must use ITxxxxx@my.sliit.lk. Admin/Manager must use role.faculty@sliit.lk",
-    };
+  if (standardEmailRegex.test(normalizedEmail)) {
+    return { normalizedEmail, category: "staff" };
   }
 
-  const localPart = normalizedEmail.split("@")[0];
-  const parts = localPart.split(".");
-
-  const rolePart = parts[0];
-  const facultyPart = parts[1];
-
-  const facultyMap = {
-    it: "Computing",
-    eng: "Engineering",
-    biz: "Business",
-    arch: "Architecture",
-    hs: "Humanities & Sciences",
-    med: "Medicine",
-  };
-
-  if (!facultyMap[facultyPart]) {
-    return {
-      valid: false,
-      message: "Invalid faculty code in email",
-    };
-  }
-
-  return {
-    valid: true,
-    role: rolePart,
-    facultyFromEmail: facultyMap[facultyPart],
-    normalizedEmail,
-  };
+  return { normalizedEmail, category: "invalid" };
 };
 
 const cookieOptions = {
@@ -80,6 +31,35 @@ const cookieOptions = {
   secure: process.env.NODE_ENV === "production",
   sameSite: "lax",
   maxAge: 7 * 24 * 60 * 60 * 1000,
+};
+
+const canCreateRole = (creatorRole, requestedRole) => {
+  if (creatorRole === "admin") {
+    return ["user", "moderator", "admin"].includes(requestedRole);
+  }
+
+  if (creatorRole === "moderator") {
+    return requestedRole === "user";
+  }
+
+  return false;
+};
+
+const buildUserPayload = (user) => ({
+  id: user._id,
+  name: user.fullName || `${user.firstName} ${user.lastName}`,
+  email: user.email,
+  role: user.role,
+  faculty: user.faculty,
+  academicYear: user.academicYear,
+  phone: user.phone,
+});
+
+const normalizeLegacyRole = (role = "") => {
+  const normalized = String(role).toLowerCase().trim();
+  if (normalized === "manager") return "moderator";
+  if (["admin", "moderator", "user"].includes(normalized)) return normalized;
+  return "user";
 };
 
 // ================= REGISTER =================
@@ -133,22 +113,11 @@ const registerUser = async (req, res) => {
       });
     }
 
-    const emailCheck = getRoleAndFacultyFromEmail(email);
-
-    if (!emailCheck.valid) {
+    const { normalizedEmail, category } = getEmailCategory(email);
+    if (category !== "user") {
       return res.status(400).json({
         success: false,
-        message: emailCheck.message,
-      });
-    }
-
-    const { normalizedEmail, role, facultyFromEmail } = emailCheck;
-
-    // Only admin/manager emails must match faculty from email
-    if (facultyFromEmail && faculty !== facultyFromEmail) {
-      return res.status(400).json({
-        success: false,
-        message: `Selected faculty does not match email faculty. Expected: ${facultyFromEmail}`,
+        message: "User registration only allows ITxxxx@my.sliit.lk emails",
       });
     }
 
@@ -181,7 +150,7 @@ const registerUser = async (req, res) => {
       phone, // Should be stored like +94771234567
       password: hashedPassword,
       sliitIdPhoto: `/uploads/${req.file.filename}`,
-      role,
+      role: "user",
     });
 
     return res.status(201).json({
@@ -210,6 +179,119 @@ const registerUser = async (req, res) => {
 };
 
 // ================= LOGIN =================
+const createRoleUser = async (req, res) => {
+  try {
+    const creatorRole = req.user.role;
+    const {
+      firstName,
+      lastName,
+      email,
+      academicYear,
+      faculty,
+      password,
+      confirmPassword,
+      phone,
+      role,
+    } = req.body;
+
+    if (!canCreateRole(creatorRole, role)) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to create this role",
+      });
+    }
+
+    if (
+      !firstName ||
+      !lastName ||
+      !email ||
+      !academicYear ||
+      !faculty ||
+      !password ||
+      !confirmPassword ||
+      !phone ||
+      !role
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Please fill all required fields",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "SLIIT ID photo is required",
+      });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Passwords do not match",
+      });
+    }
+
+    const { normalizedEmail, category } = getEmailCategory(email);
+    if (role === "user" && category !== "user") {
+      return res.status(400).json({
+        success: false,
+        message: "User email must be ITxxxx@my.sliit.lk",
+      });
+    }
+
+    if (role !== "user" && category !== "staff") {
+      return res.status(400).json({
+        success: false,
+        message: "Admin and moderator accounts require a valid standard email",
+      });
+    }
+
+    const existingUserByEmail = await User.findOne({ email: normalizedEmail });
+    if (existingUserByEmail) {
+      return res.status(409).json({
+        success: false,
+        message: "User already exists with this email",
+      });
+    }
+
+    const existingUserByPhone = await User.findOne({ phone });
+    if (existingUserByPhone) {
+      return res.status(409).json({
+        success: false,
+        message: "User already exists with this phone number",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await User.create({
+      firstName,
+      lastName,
+      email: normalizedEmail,
+      academicYear,
+      faculty,
+      phone,
+      password: hashedPassword,
+      sliitIdPhoto: `/uploads/${req.file.filename}`,
+      role,
+      // staff users are marked verified because they are created by privileged users
+      isEmailVerified: role !== "user",
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: `${role} account created successfully`,
+      user: buildUserPayload(newUser),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -231,6 +313,12 @@ const loginUser = async (req, res) => {
       });
     }
 
+    const migratedRole = normalizeLegacyRole(user.role);
+    if (migratedRole !== user.role) {
+      user.role = migratedRole;
+      await user.save();
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
@@ -245,6 +333,16 @@ const loginUser = async (req, res) => {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
+      });
+    }
+
+    if (
+      (user.role === "admin" || user.role === "moderator") &&
+      !user.isEmailVerified
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Staff email must be verified before login",
       });
     }
 
@@ -268,17 +366,10 @@ const loginUser = async (req, res) => {
       success: true,
       message: "Login successful",
       token: accessToken,
-      user: {
-        id: user._id,
-        name: user.fullName || `${user.firstName} ${user.lastName}`,
-        email: user.email,
-        role: user.role,
-        faculty: user.faculty,
-        academicYear: user.academicYear,
-        phone: user.phone,
-      },
+      user: buildUserPayload(user),
     });
   } catch (error) {
+    console.error("Login error:", error);
     return res.status(500).json({
       success: false,
       message: "Server error",
@@ -486,7 +577,7 @@ const refreshToken = async (req, res) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id);
 
     if (!user || user.refreshToken !== token) {
@@ -513,6 +604,7 @@ const refreshToken = async (req, res) => {
 
 module.exports = {
   registerUser,
+  createRoleUser,
   loginUser,
   getLoginLogs,
   forgotPassword,

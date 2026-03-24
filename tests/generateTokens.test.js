@@ -8,7 +8,6 @@ const {
 } = require("../src/utils/generateTokens");
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
-process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "test-refresh";
 
 const mockUser = {
   _id: "507f191e810c19729de860ea",
@@ -27,7 +26,7 @@ test("generateAccessToken returns verifiable JWT payload", () => {
 
 test("generateRefreshToken returns verifiable refresh JWT payload", () => {
   const token = generateRefreshToken(mockUser);
-  const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
   assert.equal(decoded.id, mockUser._id);
 });
