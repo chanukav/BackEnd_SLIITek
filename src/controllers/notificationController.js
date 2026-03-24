@@ -1,12 +1,47 @@
 const Notification = require('../models/Notification');
 const mongoose = require('mongoose');
+const { addClient, removeClient, pushToClient } = require('../utils/sseClients');
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 const escapeRegExp = (value) =>
     String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-// Create a new notification
+// ─────────────────────────────────────────────
+// SSE stream — one long-lived connection per client
+// ─────────────────────────────────────────────
+exports.sseStream = (req, res) => {
+    const email = req.user.email.toLowerCase();
+
+    // SSE headers
+    res.writeHead(200, {
+        'Content-Type':  'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection':    'keep-alive',
+        // Allow cross-origin SSE (CORS already handled globally, but keep explicit)
+        'X-Accel-Buffering': 'no',
+    });
+
+    // Send an initial "connected" comment so the browser knows the stream is live
+    res.write(': connected\n\n');
+
+    // Keep-alive ping every 25 s (prevents proxy timeout / browser disconnect)
+    const keepAlive = setInterval(() => {
+        res.write(': ping\n\n');
+    }, 25000);
+
+    addClient(email, res);
+
+    // Clean up when client disconnects
+    req.on('close', () => {
+        clearInterval(keepAlive);
+        removeClient(email, res);
+    });
+};
+
+// ─────────────────────────────────────────────
+// Create a new notification and push via SSE
+// ─────────────────────────────────────────────
 exports.createNotification = async (req, res) => {
     try {
         const { email, type, title, message, entityType, entityId } = req.body;
@@ -41,6 +76,10 @@ exports.createNotification = async (req, res) => {
             entityId: normalizedEntityId || new mongoose.Types.ObjectId().toString()
         });
         await notification.save();
+
+        // Push in real-time to the target user's SSE connections (if any)
+        pushToClient(normalizedEmail, notification.toObject());
+
         res.status(201).json({ success: true, data: notification });
     } catch (error) {
         const status = error?.name === "ValidationError" ? 400 : 500
@@ -48,14 +87,15 @@ exports.createNotification = async (req, res) => {
     }
 };
 
-// Get all notifications (Admin use case) — supports pagination + filtering
+// ─────────────────────────────────────────────
+// Get all notifications (Admin) — paginated + filtered
+// ─────────────────────────────────────────────
 exports.getAllNotifications = async (req, res) => {
     try {
         const page  = Math.max(1, parseInt(req.query.page)  || 1);
         const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
         const skip  = (page - 1) * limit;
 
-        // Build filter
         const filter = {};
         if (req.query.type && req.query.type !== 'all') {
             const allowedTypes = ['answer', 'comment', 'best_answer', 'report_update', 'announcement'];
@@ -66,7 +106,7 @@ exports.getAllNotifications = async (req, res) => {
         }
         if (req.query.email) {
             const safe = escapeRegExp(req.query.email.trim().toLowerCase());
-            filter.email = { $regex: `^${safe}`, $options: 'i' }; // prefix search
+            filter.email = { $regex: `^${safe}`, $options: 'i' };
         }
 
         const [notifications, total] = await Promise.all([
@@ -87,7 +127,9 @@ exports.getAllNotifications = async (req, res) => {
     }
 };
 
+// ─────────────────────────────────────────────
 // Get notifications for a specific user
+// ─────────────────────────────────────────────
 exports.getUserNotifications = async (req, res) => {
     try {
         const { email } = req.params;
@@ -97,14 +139,12 @@ exports.getUserNotifications = async (req, res) => {
             return res.status(400).json({ success: false, message: "Email parameter is required" })
         }
 
-        // Regular users can only fetch their own notifications
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && requester.email.toLowerCase() !== normalizedEmail) {
             return res.status(403).json({ success: false, message: "Forbidden: you can only view your own notifications" });
         }
 
-        // Case-insensitive exact match for emails.
         const safe = escapeRegExp(normalizedEmail)
         const notifications = await Notification.find({
             email: { $regex: `^${safe}$`, $options: "i" }
@@ -115,7 +155,9 @@ exports.getUserNotifications = async (req, res) => {
     }
 };
 
-// Mark all notifications as read for a given user email
+// ─────────────────────────────────────────────
+// Mark ALL notifications as read for a user
+// ─────────────────────────────────────────────
 exports.markAllAsRead = async (req, res) => {
     try {
         const { email } = req.params;
@@ -125,7 +167,6 @@ exports.markAllAsRead = async (req, res) => {
             return res.status(400).json({ success: false, message: "Email parameter is required" });
         }
 
-        // Ownership check — users can only mark their own
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && requester.email.toLowerCase() !== normalizedEmail) {
@@ -144,7 +185,9 @@ exports.markAllAsRead = async (req, res) => {
     }
 };
 
-// Mark notification as read
+// ─────────────────────────────────────────────
+// Mark single notification as read
+// ─────────────────────────────────────────────
 exports.markAsRead = async (req, res) => {
     try {
         const { id } = req.params;
@@ -154,7 +197,6 @@ exports.markAsRead = async (req, res) => {
             return res.status(404).json({ success: false, message: "Notification not found" });
         }
 
-        // Ownership check
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && notification.email !== requester.email.toLowerCase()) {
@@ -169,7 +211,9 @@ exports.markAsRead = async (req, res) => {
     }
 };
 
-// Mark notification as unread
+// ─────────────────────────────────────────────
+// Mark single notification as unread
+// ─────────────────────────────────────────────
 exports.markAsUnread = async (req, res) => {
     try {
         const { id } = req.params;
@@ -179,7 +223,6 @@ exports.markAsUnread = async (req, res) => {
             return res.status(404).json({ success: false, message: "Notification not found" });
         }
 
-        // Ownership check
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && notification.email !== requester.email.toLowerCase()) {
@@ -194,7 +237,9 @@ exports.markAsUnread = async (req, res) => {
     }
 };
 
+// ─────────────────────────────────────────────
 // Delete a notification
+// ─────────────────────────────────────────────
 exports.deleteNotification = async (req, res) => {
     try {
         const { id } = req.params;
@@ -204,7 +249,6 @@ exports.deleteNotification = async (req, res) => {
             return res.status(404).json({ success: false, message: "Notification not found" });
         }
 
-        // Ownership check — only admin/moderator or the owner can delete
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && notification.email !== requester.email.toLowerCase()) {
