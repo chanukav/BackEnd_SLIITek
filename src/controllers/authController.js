@@ -1,5 +1,10 @@
 const bcrypt = require("bcryptjs");
-const User = require("../models/User");
+const jwt = require("jsonwebtoken");
+const User = require("../models/user");
+const {
+  generateAccessToken,
+  generateRefreshToken,
+} = require("../utils/generateTokens");
 const {
   sendWhatsAppOtp,
   checkWhatsAppOtp,
@@ -68,6 +73,13 @@ const getRoleAndFacultyFromEmail = (email) => {
     facultyFromEmail: facultyMap[facultyPart],
     normalizedEmail,
   };
+};
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
 // ================= REGISTER =================
@@ -244,10 +256,18 @@ const loginUser = async (req, res) => {
 
     await user.save();
 
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+
+    user.refreshToken = refreshToken;
+    await user.save();
+
+    res.cookie("refreshToken", refreshToken, cookieOptions);
+
     return res.status(200).json({
       success: true,
       message: "Login successful",
-      token: "sample-token",
+      token: accessToken,
       user: {
         id: user._id,
         name: user.fullName || `${user.firstName} ${user.lastName}`,
@@ -270,16 +290,12 @@ const loginUser = async (req, res) => {
 // ================= LOGIN LOGS =================
 const getLoginLogs = async (req, res) => {
   try {
-    const { email } = req.query;
-
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: "Email is required",
-      });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    const requester = req.user;
+    const requestedEmail = req.query.email?.toLowerCase().trim();
+    const targetEmail = requester.role === "admin" && requestedEmail
+      ? requestedEmail
+      : requester.email;
+    const user = await User.findOne({ email: targetEmail });
 
     if (!user) {
       return res.status(404).json({
@@ -432,18 +448,67 @@ const resetPassword = async (req, res) => {
 
 // ================= LOGOUT =================
 const logoutUser = async (req, res) => {
-  return res.status(200).json({
-    success: true,
-    message: "Logout successful",
-  });
+  try {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (refreshToken) {
+      const user = await User.findOne({ refreshToken });
+      if (user) {
+        user.refreshToken = null;
+        await user.save();
+      }
+    }
+
+    res.clearCookie("refreshToken", cookieOptions);
+
+    return res.status(200).json({
+      success: true,
+      message: "Logout successful",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
 };
 
 // ================= REFRESH TOKEN =================
 const refreshToken = async (req, res) => {
-  return res.status(200).json({
-    success: true,
-    token: "new-sample-token",
-  });
+  try {
+    const token = req.cookies.refreshToken || req.body.refreshToken;
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token is required",
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user || user.refreshToken !== token) {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid refresh token",
+      });
+    }
+
+    const newAccessToken = generateAccessToken(user);
+
+    return res.status(200).json({
+      success: true,
+      token: newAccessToken,
+    });
+  } catch (error) {
+    return res.status(403).json({
+      success: false,
+      message: "Refresh failed",
+      error: error.message,
+    });
+  }
 };
 
 module.exports = {

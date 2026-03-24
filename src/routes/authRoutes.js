@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const upload = require("../middleware/uploadMiddleware");
+const { protect } = require("../middleware/authMiddleware");
 const {
   registerUser,
   loginUser,
@@ -27,7 +28,7 @@ router.post("/logout", logoutUser);
 router.post("/refresh-token", refreshToken);
 
 // Login Logs
-router.get("/login-logs", getLoginLogs);
+router.get("/login-logs", protect, getLoginLogs);
 
 // Forgot Password
 router.post("/forgot-password", forgotPassword);
