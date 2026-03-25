@@ -39,6 +39,8 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const sampleUserRoutes = require("./routes/sampleUserRoutes")
 const reportRoutes = require('./routes/report.routes');
 const authRoutes = require("./routes/authRoutes");
+const questionRoutes = require("./routes/questionRoutes");
+const answerRoutes = require("./routes/answerRoutes");
 
 // Basic route
 app.get('/', (req, res) => {
@@ -52,6 +54,8 @@ app.use('/api/reports', reportRoutes);
 // Static folder (uploads)
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 app.use("/api/auth", authRoutes);
+app.use("/api/questions", questionRoutes);
+app.use("/api/answers", answerRoutes);
 
 
 // MongoDB connect + server start
