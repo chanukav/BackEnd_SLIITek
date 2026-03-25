@@ -1,14 +1,29 @@
 const Answer = require("../models/Answer");
 const Question = require("../models/Question");
 const Comment = require("../models/Comment");
+const mongoose = require("mongoose");
+
+const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
 const postAnswer = async (req, res) => {
   try {
     const { questionId } = req.params;
     const { body } = req.body;
 
-    if (!body || !body.trim()) {
-      return res.status(400).json({ message: "Answer body is required" });
+    if (!isValidObjectId(questionId)) {
+      return res.status(400).json({ message: "That question id doesn’t look valid." });
+    }
+
+    if (typeof body !== "string") {
+      return res.status(400).json({ message: "Answer must be plain text." });
+    }
+
+    const trimmedBody = body.trim();
+
+    if (!trimmedBody) {
+      return res
+        .status(400)
+        .json({ message: "Please write an answer before submitting." });
     }
 
     const question = await Question.findById(questionId);
@@ -23,7 +38,7 @@ const postAnswer = async (req, res) => {
     const answer = await Answer.create({
       questionId,
       authorId: req.user._id,
-      body,
+      body: trimmedBody,
     });
 
     return res.status(201).json({
@@ -40,8 +55,20 @@ const editAnswer = async (req, res) => {
     const { answerId } = req.params;
     const { body } = req.body;
 
-    if (!body || !body.trim()) {
-      return res.status(400).json({ message: "Answer body is required" });
+    if (!isValidObjectId(answerId)) {
+      return res.status(400).json({ message: "That answer id doesn’t look valid." });
+    }
+
+    if (typeof body !== "string") {
+      return res.status(400).json({ message: "Answer must be plain text." });
+    }
+
+    const trimmedBody = body.trim();
+
+    if (!trimmedBody) {
+      return res
+        .status(400)
+        .json({ message: "Please write an answer before submitting." });
     }
 
     const answer = await Answer.findById(answerId);
@@ -55,7 +82,7 @@ const editAnswer = async (req, res) => {
         .json({ message: "Only answer owner can edit this answer" });
     }
 
-    answer.body = body;
+    answer.body = trimmedBody;
     await answer.save();
 
     return res.json({

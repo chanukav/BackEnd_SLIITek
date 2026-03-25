@@ -1,7 +1,6 @@
 const Question = require("../models/Question");
 const Answer = require("../models/Answer");
 const Comment = require("../models/Comment");
-const mongoose = require("mongoose");
 
 const QUESTION_CATEGORIES = [
   "Academic",
@@ -13,54 +12,18 @@ const QUESTION_CATEGORIES = [
   "General / Other",
 ];
 
-const QUESTION_VALIDATION = {
-  title: { min: 5, max: 150 },
-  body: { min: 10, max: 5000 },
-};
-
-const normalizeOptionalString = (value) => {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-};
-
-const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
-
-const validateLength = (label, value, { min, max }) => {
-  if (value.length < min) return `${label} must be at least ${min} characters`;
-  if (value.length > max) return `${label} must be at most ${max} characters`;
-  return null;
-};
-
 const createQuestion = async (req, res) => {
   try {
-    const title = normalizeOptionalString(req.body?.title);
-    const body = normalizeOptionalString(req.body?.body);
-    const category = normalizeOptionalString(req.body?.category);
+    const { title, body, category } = req.body;
 
     if (!title || !body) {
       return res.status(400).json({ message: "Title and body are required" });
     }
 
-    const titleLengthError = validateLength(
-      "Title",
-      title,
-      QUESTION_VALIDATION.title
-    );
-    if (titleLengthError) {
-      return res.status(400).json({ message: titleLengthError });
-    }
-
-    const bodyLengthError = validateLength(
-      "Body",
-      body,
-      QUESTION_VALIDATION.body
-    );
-    if (bodyLengthError) {
-      return res.status(400).json({ message: bodyLengthError });
-    }
-
-    const nextCategory = category ?? "General / Other";
+    const nextCategory =
+      typeof category === "string" && category.trim()
+        ? category.trim()
+        : "General / Other";
 
     if (!QUESTION_CATEGORIES.includes(nextCategory)) {
       return res.status(400).json({ message: "Invalid category" });
@@ -97,10 +60,6 @@ const getQuestions = async (req, res) => {
 
 const getQuestionById = async (req, res) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
-      return res.status(400).json({ message: "Invalid question id" });
-    }
-
     const question = await Question.findById(req.params.id)
       .populate("authorId", "firstName lastName email role")
       .populate("bestAnswerId");
@@ -117,17 +76,11 @@ const getQuestionById = async (req, res) => {
 
 const updateQuestion = async (req, res) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
-      return res.status(400).json({ message: "Invalid question id" });
-    }
+    const { title, body, category } = req.body;
 
-    const title = normalizeOptionalString(req.body?.title);
-    const body = normalizeOptionalString(req.body?.body);
-    const category = normalizeOptionalString(req.body?.category);
-
-    const hasTitle = Boolean(title);
-    const hasBody = Boolean(body);
-    const hasCategory = Boolean(category);
+    const hasTitle = typeof title === "string" && title.trim();
+    const hasBody = typeof body === "string" && body.trim();
+    const hasCategory = typeof category === "string" && category.trim();
 
     if (!hasTitle && !hasBody && !hasCategory) {
       return res.status(400).json({ message: "Title, body, or category is required" });
@@ -145,32 +98,10 @@ const updateQuestion = async (req, res) => {
         .json({ message: "Only question owner can edit this question" });
     }
 
-    if (hasTitle) {
-      const titleLengthError = validateLength(
-        "Title",
-        title,
-        QUESTION_VALIDATION.title
-      );
-      if (titleLengthError) {
-        return res.status(400).json({ message: titleLengthError });
-      }
-      question.title = title;
-    }
-
-    if (hasBody) {
-      const bodyLengthError = validateLength(
-        "Body",
-        body,
-        QUESTION_VALIDATION.body
-      );
-      if (bodyLengthError) {
-        return res.status(400).json({ message: bodyLengthError });
-      }
-      question.body = body;
-    }
-
+    if (hasTitle) question.title = title.trim();
+    if (hasBody) question.body = body.trim();
     if (hasCategory) {
-      const nextCategory = category;
+      const nextCategory = category.trim();
       if (!QUESTION_CATEGORIES.includes(nextCategory)) {
         return res.status(400).json({ message: "Invalid category" });
       }
@@ -194,10 +125,6 @@ const updateQuestion = async (req, res) => {
 
 const deleteQuestion = async (req, res) => {
   try {
-    if (!isValidObjectId(req.params.id)) {
-      return res.status(400).json({ message: "Invalid question id" });
-    }
-
     const question = await Question.findById(req.params.id);
 
     if (!question) {
@@ -228,14 +155,74 @@ const deleteQuestion = async (req, res) => {
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const QUESTION_SEARCH_STATUS = ["open", "solved", "locked"];
+
+const searchQuestions = async (req, res) => {
+  try {
+    const rawQuery = typeof req.query.q === "string" ? req.query.q : "";
+    const q = rawQuery.trim();
+
+    if (!q) {
+      return res.status(400).json({ message: "Search query (q) is required" });
+    }
+
+    if (q.length < 2) {
+      return res.json([]);
+    }
+
+    const rawCategory = typeof req.query.category === "string" ? req.query.category : "";
+    const category = rawCategory.trim();
+    if (category && !QUESTION_CATEGORIES.includes(category)) {
+      return res.status(400).json({ message: "Invalid category" });
+    }
+
+    const rawStatus = typeof req.query.status === "string" ? req.query.status : "";
+    const status = rawStatus.trim();
+    if (status && !QUESTION_SEARCH_STATUS.includes(status)) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
+    const skip = (page - 1) * limit;
+
+    const tokens = q
+      .toLowerCase()
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+
+    const escapedTokens = tokens.map(escapeRegExp).filter((t) => t.length >= 2);
+    if (!escapedTokens.length) {
+      return res.json([]);
+    }
+
+    const tokenRegex = new RegExp(escapedTokens.join("|"), "i");
+
+    const filter = {
+      $or: [{ title: { $regex: tokenRegex } }, { body: { $regex: tokenRegex } }],
+    };
+    if (category) filter.category = category;
+    if (status) filter.status = status;
+
+    const questions = await Question.find(filter)
+      .populate("authorId", "firstName lastName email role")
+      .populate("bestAnswerId")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    return res.json(questions);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 const getQuestionSuggestions = async (req, res) => {
   try {
     const rawTitle = typeof req.query.title === "string" ? req.query.title : "";
     const title = rawTitle.trim();
-
-    if (title.length > QUESTION_VALIDATION.title.max) {
-      return res.json([]);
-    }
 
     if (title.length < 3) {
       return res.json([]);
@@ -272,6 +259,7 @@ module.exports = {
   createQuestion,
   getQuestions,
   getQuestionById,
+  searchQuestions,
   getQuestionSuggestions,
   updateQuestion,
   deleteQuestion,

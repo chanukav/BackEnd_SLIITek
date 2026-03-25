@@ -12,8 +12,8 @@ const QUESTION_CATEGORIES = [
 
 const questionSchema = new mongoose.Schema(
   {
-    title: { type: String, required: true, trim: true, minlength: 5, maxlength: 150 },
-    body: { type: String, required: true, trim: true, minlength: 10, maxlength: 5000 },
+    title: { type: String, required: true, trim: true },
+    body: { type: String, required: true, trim: true },
     category: {
       type: String,
       enum: QUESTION_CATEGORIES,

@@ -5,12 +5,14 @@ const {
   createQuestion,
   getQuestions,
   getQuestionById,
+  searchQuestions,
   getQuestionSuggestions,
   updateQuestion,
   deleteQuestion,
 } = require("../controllers/questionController");
 
 router.get("/", getQuestions);
+router.get("/search", searchQuestions);
 router.get("/suggestions", getQuestionSuggestions);
 router.get("/:id", getQuestionById);
 router.post("/", protect, createQuestion);
