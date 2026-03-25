@@ -1,9 +1,25 @@
 const mongoose = require("mongoose");
 
+const QUESTION_CATEGORIES = [
+  "Academic",
+  "Career & Internships",
+  "Campus Life",
+  "Technical / Programming Help",
+  "Study Resources",
+  "Clubs & Events",
+  "General / Other",
+];
+
 const questionSchema = new mongoose.Schema(
   {
-    title: { type: String, required: true, trim: true },
-    body: { type: String, required: true, trim: true },
+    title: { type: String, required: true, trim: true, minlength: 5, maxlength: 150 },
+    body: { type: String, required: true, trim: true, minlength: 10, maxlength: 5000 },
+    category: {
+      type: String,
+      enum: QUESTION_CATEGORIES,
+      default: "General / Other",
+      trim: true,
+    },
     authorId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
