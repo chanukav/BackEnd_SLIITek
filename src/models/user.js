@@ -74,6 +74,11 @@ const userSchema = new mongoose.Schema(
       required: [true, "SLIIT ID photo is required"],
       trim: true,
     },
+    avatar: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     role: {
       type: String,
       enum: ["admin", "moderator", "user"],

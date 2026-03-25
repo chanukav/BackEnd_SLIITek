@@ -41,6 +41,7 @@ const reportRoutes = require('./routes/report.routes');
 const authRoutes = require("./routes/authRoutes");
 const questionRoutes = require("./routes/questionRoutes");
 const answerRoutes = require("./routes/answerRoutes");
+const userDashboardRoutes = require("./routes/userDashboardRoutes");
 
 // Basic route
 app.get('/', (req, res) => {
@@ -51,6 +52,7 @@ app.get('/', (req, res) => {
 app.use('/api/notifications', notificationRoutes);
 app.use("/api/sample-users", sampleUserRoutes)
 app.use('/api/reports', reportRoutes);
+app.use("/api/user-dashboard", userDashboardRoutes);
 // Static folder (uploads)
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 app.use("/api/auth", authRoutes);

@@ -40,4 +40,23 @@ const upload = multer({
   fileFilter,
 });
 
+const avatarStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadPath);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, "avatar-" + uniqueSuffix + path.extname(file.originalname));
+  },
+});
+
+const uploadAvatar = multer({
+  storage: avatarStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter,
+});
+
 module.exports = upload;
+module.exports.uploadAvatar = uploadAvatar;

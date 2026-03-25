@@ -1,3 +1,5 @@
+const path = require("path");
+const fs = require("fs");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
@@ -54,6 +56,122 @@ const buildUserPayload = (user) => ({
   academicYear: user.academicYear,
   phone: user.phone,
 });
+
+const buildProfilePayload = (user) => ({
+  id: user._id,
+  name: user.fullName || `${user.firstName} ${user.lastName}`,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  email: user.email,
+  role: user.role,
+  faculty: user.faculty,
+  academicYear: user.academicYear,
+  phone: user.phone,
+  avatar: user.avatar || null,
+  sliitIdPhoto: user.sliitIdPhoto || null,
+});
+
+const uploadsDir = path.join(__dirname, "..", "uploads");
+
+const removeAvatarFile = (avatarPath) => {
+  if (!avatarPath || typeof avatarPath !== "string") return;
+  const basename = path.basename(avatarPath);
+  const abs = path.join(uploadsDir, basename);
+  if (fs.existsSync(abs)) {
+    fs.unlinkSync(abs);
+  }
+};
+
+// ================= CURRENT USER PROFILE =================
+const getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("-password -refreshToken");
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+    return res.status(200).json({
+      success: true,
+      user: buildProfilePayload(user),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+const updateMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const {
+      firstName,
+      lastName,
+      academicYear,
+      faculty,
+      phone,
+      clearAvatar,
+    } = req.body;
+
+    const YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+    const FACULTIES = [
+      "Computing",
+      "Engineering",
+      "Business",
+      "Architecture",
+      "Humanities & Sciences",
+      "Medicine",
+    ];
+
+    if (firstName !== undefined) user.firstName = String(firstName).trim();
+    if (lastName !== undefined) user.lastName = String(lastName).trim();
+    if (academicYear !== undefined) {
+      if (!YEARS.includes(academicYear)) {
+        return res.status(400).json({ success: false, message: "Invalid academic year" });
+      }
+      user.academicYear = academicYear;
+    }
+    if (faculty !== undefined) {
+      if (!FACULTIES.includes(faculty)) {
+        return res.status(400).json({ success: false, message: "Invalid faculty" });
+      }
+      user.faculty = faculty;
+    }
+    if (phone !== undefined) user.phone = String(phone).trim();
+
+    const shouldClearAvatar =
+      clearAvatar === true || clearAvatar === "true" || clearAvatar === "1";
+
+    if (shouldClearAvatar) {
+      removeAvatarFile(user.avatar);
+      user.avatar = null;
+    }
+
+    if (req.file) {
+      removeAvatarFile(user.avatar);
+      user.avatar = `/uploads/${req.file.filename}`;
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile updated",
+      user: buildProfilePayload(user),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
 
 const normalizeLegacyRole = (role = "") => {
   const normalized = String(role).toLowerCase().trim();
@@ -613,4 +731,6 @@ module.exports = {
   sendOtp,
   verifyOtp,
   resetPassword,
+  getMe,
+  updateMe,
 };
