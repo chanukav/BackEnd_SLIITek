@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const upload = require("../middleware/uploadMiddleware");
+const { uploadAvatar } = require("../middleware/uploadMiddleware");
 const { protect, authorize } = require("../middleware/authMiddleware");
 const {
   registerUser,
@@ -14,6 +15,8 @@ const {
   resetPassword,
   logoutUser,
   refreshToken,
+  getMe,
+  updateMe,
 } = require("../controllers/authController");
 
 // Register
@@ -25,6 +28,10 @@ router.post(
   upload.single("sliitIdPhoto"),
   createRoleUser
 );
+
+// Current user profile
+router.get("/me", protect, getMe);
+router.patch("/me", protect, uploadAvatar.single("avatar"), updateMe);
 
 // Login
 router.post("/login", loginUser);

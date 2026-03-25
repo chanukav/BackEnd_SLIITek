@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --test",
     "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "seed:users": "node src/scripts/seedUsers.js",
+    "seed:dashboard": "node src/scripts/seedDashboardData.js"
   },
   "repository": {
     "type": "git",
