@@ -13,6 +13,8 @@ const {
   sendOtp,
   verifyOtp,
   resetPassword,
+  sendSignupEmailOtp,
+  confirmSignupEmail,
   logoutUser,
   refreshToken,
   getMe,
@@ -32,6 +34,10 @@ router.post(
 // Current user profile
 router.get("/me", protect, getMe);
 router.patch("/me", protect, uploadAvatar.single("avatar"), updateMe);
+
+// Sign-up email verification
+router.post("/verify-email/send", sendSignupEmailOtp);
+router.post("/verify-email/confirm", confirmSignupEmail);
 
 // Login
 router.post("/login", loginUser);

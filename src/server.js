@@ -8,16 +8,27 @@ const path = require("path");
 // Load env variables
 dotenv.config();
 
+const { isTwilioVerifyConfigured, twilioVerifyStatusMessage } = require("./utils/twilioEnv");
+if (!isTwilioVerifyConfigured()) {
+  console.warn(
+    "\n[TWILIO] Verify WhatsApp not configured — forgot-password uses an in-app generated code (see API devOtp / server log).\n       ",
+    twilioVerifyStatusMessage(),
+    "\n"
+  );
+}
+
 const app = express();
 
-const allowedOrigins = (
-  process.env.CLIENT_URLS ||
-  process.env.CLIENT_URL ||
-  "http://localhost:5173,http://localhost:5174"
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+// Allow local dev origins by default, but also honor env overrides.
+// `CLIENT_URL` can be a single origin or a comma-separated list.
+const defaultLocalOrigins = ["http://localhost:5173", "http://localhost:5174"];
+const clientOriginsRaw = process.env.CLIENT_URLS || process.env.CLIENT_URL;
+const allowedOrigins = [
+  ...(clientOriginsRaw
+    ? clientOriginsRaw.split(",").map((origin) => origin.trim()).filter(Boolean)
+    : []),
+  ...defaultLocalOrigins,
+].filter(Boolean);
 
 // Middleware
 app.use(

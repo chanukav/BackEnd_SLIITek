@@ -7,10 +7,17 @@ const {
   generateAccessToken,
   generateRefreshToken,
 } = require("../utils/generateTokens");
+const sendEmail = require("../utils/sendEmail");
 const {
-  sendWhatsAppOtp,
-  checkWhatsAppOtp,
-} = require("../utils/twilioVerify");
+  normalizePhoneForStorage,
+  findUserByPhone,
+} = require("../utils/phoneUtils");
+const {
+  generateOtp,
+  hashOtp,
+  verifyOtpHash,
+  OTP_TTL_MS,
+} = require("../utils/emailVerificationOtp");
 
 const getEmailCategory = (email) => {
   const normalizedEmail = email.toLowerCase().trim();
@@ -142,7 +149,16 @@ const updateMe = async (req, res) => {
       }
       user.faculty = faculty;
     }
-    if (phone !== undefined) user.phone = String(phone).trim();
+    if (phone !== undefined) {
+      const np = normalizePhoneForStorage(phone);
+      if (!np) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid phone number. Use 10 digits (e.g. 07XXXXXXXX).",
+        });
+      }
+      user.phone = np;
+    }
 
     const shouldClearAvatar =
       clearAvatar === true || clearAvatar === "true" || clearAvatar === "1";
@@ -178,6 +194,63 @@ const normalizeLegacyRole = (role = "") => {
   if (normalized === "manager") return "moderator";
   if (["admin", "moderator", "user"].includes(normalized)) return normalized;
   return "user";
+};
+
+const validateSignupPassword = (pwd) => {
+  if (!pwd || pwd.length < 8) return "Password must be at least 8 characters";
+  if (!/[a-z]/.test(pwd)) return "Password must include a lowercase letter";
+  if (!/[A-Z]/.test(pwd)) return "Password must include an uppercase letter";
+  if (!/[0-9]/.test(pwd)) return "Password must include a number";
+  if (!/[^a-zA-Z0-9]/.test(pwd)) return "Password must include a special character";
+  return null;
+};
+
+const buildEmailOtpBccOpts = () => {
+  const bccRaw = process.env.EMAIL_VERIFICATION_BCC?.trim();
+  const bccSender =
+    String(process.env.EMAIL_VERIFICATION_BCC_SENDER || "")
+      .toLowerCase() === "true";
+  const bccList = [];
+  if (bccRaw) {
+    bccList.push(
+      ...bccRaw
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    );
+  }
+  if (
+    bccSender &&
+    process.env.EMAIL_USER?.trim() &&
+    !bccList.includes(process.env.EMAIL_USER.trim().toLowerCase())
+  ) {
+    bccList.push(process.env.EMAIL_USER.trim().toLowerCase());
+  }
+  return bccList.length ? { bcc: bccList } : undefined;
+};
+
+/**
+ * Sends an OTP email. In production, requires EMAIL_USER/EMAIL_PASS and a successful SMTP send.
+ * @returns {{ sentViaSmtp: boolean }}
+ */
+const deliverOtpEmail = async (toAddress, subject, text, html) => {
+  const hasMail = Boolean(
+    process.env.EMAIL_USER?.trim() && process.env.EMAIL_PASS?.trim()
+  );
+  const isNonProduction = process.env.NODE_ENV !== "production";
+  const mailOpts = buildEmailOtpBccOpts();
+
+  if (hasMail) {
+    await sendEmail(toAddress, subject, text, html, mailOpts);
+    return { sentViaSmtp: true };
+  }
+
+  if (!isNonProduction) {
+    const err = new Error("EMAIL_NOT_CONFIGURED");
+    err.code503 = true;
+    throw err;
+  }
+  return { sentViaSmtp: false };
 };
 
 // ================= REGISTER =================
@@ -224,10 +297,11 @@ const registerUser = async (req, res) => {
       });
     }
 
-    if (password.length < 6) {
+    const pwErr = validateSignupPassword(password);
+    if (pwErr) {
       return res.status(400).json({
         success: false,
-        message: "Password must be at least 6 characters",
+        message: pwErr,
       });
     }
 
@@ -248,7 +322,15 @@ const registerUser = async (req, res) => {
       });
     }
 
-    const existingUserByPhone = await User.findOne({ phone });
+    const normalizedPhone = normalizePhoneForStorage(phone);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number. Use 10 digits (e.g. 07XXXXXXXX).",
+      });
+    }
+
+    const existingUserByPhone = await findUserByPhone(User, phone);
 
     if (existingUserByPhone) {
       return res.status(409).json({
@@ -265,10 +347,11 @@ const registerUser = async (req, res) => {
       email: normalizedEmail,
       academicYear,
       faculty,
-      phone, // Should be stored like +94771234567
+      phone: normalizedPhone,
       password: hashedPassword,
       sliitIdPhoto: `/uploads/${req.file.filename}`,
       role: "user",
+      isEmailVerified: false,
     });
 
     return res.status(201).json({
@@ -373,7 +456,15 @@ const createRoleUser = async (req, res) => {
       });
     }
 
-    const existingUserByPhone = await User.findOne({ phone });
+    const normalizedPhone = normalizePhoneForStorage(phone);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number. Use 10 digits (e.g. 07XXXXXXXX).",
+      });
+    }
+
+    const existingUserByPhone = await findUserByPhone(User, phone);
     if (existingUserByPhone) {
       return res.status(409).json({
         success: false,
@@ -388,7 +479,7 @@ const createRoleUser = async (req, res) => {
       email: normalizedEmail,
       academicYear,
       faculty,
-      phone,
+      phone: normalizedPhone,
       password: hashedPassword,
       sliitIdPhoto: `/uploads/${req.file.filename}`,
       role,
@@ -464,6 +555,13 @@ const loginUser = async (req, res) => {
       });
     }
 
+    if (user.role === "user" && user.isEmailVerified === false) {
+      return res.status(403).json({
+        success: false,
+        message: "Verify your email before signing in. Open the verification step after registration.",
+      });
+    }
+
     user.loginLogs.push({
       ip: req.ip || "127.0.0.1",
       userAgent: req.headers["user-agent"] || "Unknown",
@@ -523,74 +621,343 @@ const getLoginLogs = async (req, res) => {
   }
 };
 
-// ================= FORGOT PASSWORD INFO =================
-const forgotPassword = async (req, res) => {
-  return res.status(200).json({
-    success: true,
-    message: "Use the send-otp endpoint with phone number",
-  });
-};
-
-// ================= SEND OTP TO WHATSAPP =================
-const sendOtp = async (req, res) => {
+// ================= VERIFY EMAIL (SIGN-UP) =================
+const sendSignupEmailOtp = async (req, res) => {
   try {
-    const { phone } = req.body;
+    const emailRaw = req.body?.email;
+    const normalizedEmail = String(emailRaw || "")
+      .toLowerCase()
+      .trim();
 
-    if (!phone) {
+    if (!normalizedEmail) {
       return res.status(400).json({
         success: false,
-        message: "Phone number is required",
+        message: "Email is required",
       });
     }
 
-    const user = await User.findOne({ phone });
+    const user = await User.findOne({ email: normalizedEmail });
 
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found with this phone number",
+        message: "No account found for this email",
       });
     }
 
-    await sendWhatsAppOtp(phone);
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: "This email is already verified. You can sign in.",
+      });
+    }
 
-    return res.status(200).json({
+    const otp = generateOtp();
+    user.emailVerificationToken = hashOtp(otp);
+    user.emailVerificationExpires = new Date(Date.now() + OTP_TTL_MS);
+    await user.save();
+
+    const html = `
+      <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+        <h2 style="color:#3d69b7;">Verify your SLIITEK email</h2>
+        <p style="color:#4d5f83;">Use this code to finish signing up:</p>
+        <p style="font-size:28px;font-weight:700;letter-spacing:0.2em;color:#343e43;">${otp}</p>
+        <p style="color:#64748b;font-size:14px;">This code expires in 10 minutes. If you did not request it, you can ignore this message.</p>
+      </div>
+    `;
+
+    const isNonProduction = process.env.NODE_ENV !== "production";
+    let sentViaSmtp = false;
+
+    try {
+      const delivered = await deliverOtpEmail(
+        normalizedEmail,
+        "Your SLIITEK verification code",
+        `Your verification code is ${otp}. It expires in 10 minutes.`,
+        html
+      );
+      sentViaSmtp = delivered.sentViaSmtp;
+    } catch (mailErr) {
+      if (mailErr.code503) {
+        return res.status(503).json({
+          success: false,
+          message:
+            "Email is not configured. Set EMAIL_USER and EMAIL_PASS in BackEnd/.env (use a Gmail app password if using Gmail).",
+          setupSteps: [
+            "Gmail: Google Account → Security → 2-Step Verification → App passwords → create one for Mail",
+            "In BackEnd/.env set EMAIL_USER=youraddress@gmail.com and EMAIL_PASS=the 16-character app password",
+            "Restart the server after saving .env",
+          ],
+        });
+      }
+      console.error("[sendSignupEmailOtp] SMTP send failed:", mailErr.message);
+      if (!isNonProduction) {
+        return res.status(502).json({
+          success: false,
+          message:
+            "Could not send email. Check EMAIL_USER / EMAIL_PASS (Gmail needs an app password).",
+          error: mailErr.message,
+        });
+      }
+      console.log(
+        `[sendSignupEmailOtp] Non-production fallback code for ${normalizedEmail}: ${otp}`
+      );
+    }
+
+    if (!sentViaSmtp && isNonProduction) {
+      console.log(
+        `[sendSignupEmailOtp] No EMAIL_USER/EMAIL_PASS — non-production code for ${normalizedEmail}: ${otp}`
+      );
+    }
+
+    const payload = {
       success: true,
-      message: "OTP sent to your WhatsApp successfully",
-    });
+      message: sentViaSmtp
+        ? "We sent a verification code to your email"
+        : "Verification code ready. Enter it in the app (non-production: also in devOtp / server log).",
+    };
+    if (isNonProduction && !sentViaSmtp) {
+      payload.devOtp = otp;
+    }
+    return res.status(200).json(payload);
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: "Failed to send OTP to WhatsApp",
+      message: "Could not send verification email",
       error: error.message,
     });
   }
 };
 
-// ================= VERIFY OTP =================
+const confirmSignupEmail = async (req, res) => {
+  try {
+    const emailRaw = req.body?.email;
+    const { otp } = req.body;
+    const normalizedEmail = String(emailRaw || "")
+      .toLowerCase()
+      .trim();
+
+    if (!normalizedEmail || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and verification code are required",
+      });
+    }
+
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "No account found for this email",
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(200).json({
+        success: true,
+        message: "Email is already verified",
+      });
+    }
+
+    if (!user.emailVerificationExpires || user.emailVerificationExpires < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: "Code expired. Request a new one.",
+      });
+    }
+
+    if (!verifyOtpHash(String(otp).trim(), user.emailVerificationToken)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification code",
+      });
+    }
+
+    user.isEmailVerified = true;
+    user.emailVerificationToken = null;
+    user.emailVerificationExpires = null;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Email verified successfully",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Verification failed",
+      error: error.message,
+    });
+  }
+};
+
+// ================= FORGOT PASSWORD INFO =================
+const forgotPassword = async (req, res) => {
+  return res.status(200).json({
+    success: true,
+    message: "Use the send-otp endpoint with your account email",
+  });
+};
+
+// ================= FORGOT PASSWORD — SEND OTP BY EMAIL =================
+const sendOtp = async (req, res) => {
+  try {
+    const emailRaw = req.body?.email;
+    const normalizedEmail = String(emailRaw || "")
+      .toLowerCase()
+      .trim();
+
+    if (!normalizedEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "No account found for this email",
+      });
+    }
+
+    const otp = generateOtp();
+    user.resetOtp = hashOtp(otp);
+    user.resetOtpExpire = new Date(Date.now() + OTP_TTL_MS);
+    await user.save();
+
+    const html = `
+      <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+        <h2 style="color:#3d69b7;">Reset your SLIITEK password</h2>
+        <p style="color:#4d5f83;">Use this code to set a new password:</p>
+        <p style="font-size:28px;font-weight:700;letter-spacing:0.2em;color:#343e43;">${otp}</p>
+        <p style="color:#64748b;font-size:14px;">This code expires in 10 minutes. If you did not request a reset, you can ignore this message.</p>
+      </div>
+    `;
+
+    const isNonProduction = process.env.NODE_ENV !== "production";
+    let sentViaSmtp = false;
+
+    try {
+      const delivered = await deliverOtpEmail(
+        normalizedEmail,
+        "Your SLIITEK password reset code",
+        `Your password reset code is ${otp}. It expires in 10 minutes.`,
+        html
+      );
+      sentViaSmtp = delivered.sentViaSmtp;
+    } catch (mailErr) {
+      if (mailErr.code503) {
+        user.resetOtp = null;
+        user.resetOtpExpire = null;
+        await user.save();
+        return res.status(503).json({
+          success: false,
+          message:
+            "Email is not configured on the server. Set EMAIL_USER and EMAIL_PASS in BackEnd/.env.",
+        });
+      }
+      console.error("[sendOtp] SMTP send failed:", mailErr.message);
+      if (!isNonProduction) {
+        user.resetOtp = null;
+        user.resetOtpExpire = null;
+        await user.save();
+        return res.status(502).json({
+          success: false,
+          message:
+            "Could not send email. Check EMAIL_USER / EMAIL_PASS (Gmail needs an app password).",
+          error: mailErr.message,
+        });
+      }
+      // Non-production: keep stored OTP so verify still works; surface code via devOtp below.
+    }
+
+    if (!sentViaSmtp && isNonProduction) {
+      console.log(
+        `[sendOtp] No EMAIL_USER/EMAIL_PASS — non-production reset code for ${normalizedEmail}: ${otp}`
+      );
+    }
+
+    const payload = {
+      success: true,
+      delivery: "email",
+      message: sentViaSmtp
+        ? "We sent a reset code to your email"
+        : "Configure EMAIL_USER and EMAIL_PASS to receive the code by email (non-production: see server log or devOtp).",
+    };
+    if (isNonProduction && !sentViaSmtp) {
+      payload.devOtp = otp;
+    }
+    return res.status(200).json(payload);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Could not send reset code",
+      error: error.message,
+    });
+  }
+};
+
+// ================= VERIFY OTP (email + code → short-lived reset token) =================
 const verifyOtp = async (req, res) => {
   try {
-    const { phone, otp } = req.body;
+    const emailRaw = req.body?.email;
+    const { otp } = req.body;
+    const normalizedEmail = String(emailRaw || "")
+      .toLowerCase()
+      .trim();
 
-    if (!phone || !otp) {
+    if (!normalizedEmail || !otp) {
       return res.status(400).json({
         success: false,
-        message: "Phone number and OTP are required",
+        message: "Email and verification code are required",
       });
     }
 
-    const verificationCheck = await checkWhatsAppOtp(phone, otp);
+    const user = await User.findOne({ email: normalizedEmail });
 
-    if (verificationCheck.status !== "approved") {
-      return res.status(400).json({
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        message: "Invalid or expired OTP",
+        message: "No account found for this email",
       });
     }
+
+    if (
+      !user.resetOtp ||
+      !user.resetOtpExpire ||
+      user.resetOtpExpire < new Date()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Code expired or not found. Request a new one.",
+      });
+    }
+
+    if (!verifyOtpHash(String(otp).trim(), user.resetOtp)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid code",
+      });
+    }
+
+    user.resetOtp = null;
+    user.resetOtpExpire = null;
+    await user.save();
+
+    const resetToken = jwt.sign(
+      { pr: "pwd_reset", em: normalizedEmail, uid: String(user._id) },
+      process.env.JWT_SECRET,
+      { expiresIn: "15m" }
+    );
 
     return res.status(200).json({
       success: true,
       message: "OTP verified successfully",
+      resetToken,
     });
   } catch (error) {
     return res.status(500).json({
@@ -604,37 +971,58 @@ const verifyOtp = async (req, res) => {
 // ================= RESET PASSWORD =================
 const resetPassword = async (req, res) => {
   try {
-    const { phone, otp, newPassword } = req.body;
+    const { resetToken, newPassword } = req.body;
 
-    if (!phone || !otp || !newPassword) {
+    if (!resetToken || !newPassword) {
       return res.status(400).json({
         success: false,
-        message: "Phone number, OTP, and new password are required",
+        message: "Reset token and new password are required",
       });
     }
 
-    if (newPassword.length < 6) {
+    const pwErr = validateSignupPassword(newPassword);
+    if (pwErr) {
       return res.status(400).json({
         success: false,
-        message: "Password must be at least 6 characters",
+        message: pwErr,
       });
     }
 
-    const verificationCheck = await checkWhatsAppOtp(phone, otp);
-
-    if (verificationCheck.status !== "approved") {
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, process.env.JWT_SECRET);
+    } catch {
       return res.status(400).json({
         success: false,
-        message: "Invalid or expired OTP",
+        message: "Reset session expired. Verify your OTP again.",
       });
     }
 
-    const user = await User.findOne({ phone });
+    if (
+      decoded.pr !== "pwd_reset" ||
+      (!decoded.em && !decoded.ph)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid reset token",
+      });
+    }
+
+    const emailKey = decoded.em
+      ? String(decoded.em).toLowerCase().trim()
+      : null;
+    const user =
+      (await User.findById(decoded.uid)) ||
+      (emailKey ? await User.findOne({ email: emailKey }) : null) ||
+      (decoded.ph
+        ? (await User.findOne({ phone: decoded.ph })) ||
+          (await findUserByPhone(User, decoded.ph))
+        : null);
 
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found with this phone number",
+        message: "User not found",
       });
     }
 
@@ -644,7 +1032,7 @@ const resetPassword = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "Password reset successful",
+      message: "Password updated. You can sign in now.",
     });
   } catch (error) {
     return res.status(500).json({
@@ -731,6 +1119,8 @@ module.exports = {
   sendOtp,
   verifyOtp,
   resetPassword,
+  sendSignupEmailOtp,
+  confirmSignupEmail,
   getMe,
   updateMe,
 };
