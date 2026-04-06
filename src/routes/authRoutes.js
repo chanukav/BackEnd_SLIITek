@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
 
 const upload = require("../middleware/uploadMiddleware");
 const { uploadAvatar } = require("../middleware/uploadMiddleware");
@@ -58,5 +59,15 @@ router.post("/forgot-password", forgotPassword);
 router.post("/forgot-password/send-otp", sendOtp);
 router.post("/forgot-password/verify-otp", verifyOtp);
 router.post("/forgot-password/reset-password", resetPassword);
+
+// ── Multer / file-upload error handler ──────────────────────────────────────
+// Must be declared with 4 parameters so Express treats it as an error handler.
+// eslint-disable-next-line no-unused-vars
+router.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError || err?.message?.toLowerCase().includes("file")) {
+    return res.status(400).json({ message: err.message });
+  }
+  next(err);
+});
 
 module.exports = router;
