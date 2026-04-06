@@ -77,6 +77,9 @@ mongoose
   .then(() => {
     console.log("✅ MongoDB connected");
 
+    // Initialize the background worker within the monolith
+    require("./workers/notificationWorker");
+
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);

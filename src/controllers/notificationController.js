@@ -1,6 +1,7 @@
 const Notification = require('../models/Notification');
 const mongoose = require('mongoose');
 const { addClient, removeClient, pushToClient } = require('../utils/sseClients');
+const { notificationQueue } = require('../queues/notificationQueue');
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -67,20 +68,25 @@ exports.createNotification = async (req, res) => {
             return res.status(400).json({ success: false, message: "Message is required (min 5 characters)" })
         }
 
-        const notification = new Notification({ 
-            email: normalizedEmail, 
-            type, 
+        const payload = {
+            email: normalizedEmail,
+            type,
             title: normalizedTitle,
             message: normalizedMessage,
             entityType: normalizedEntityType || 'System',
             entityId: normalizedEntityId || new mongoose.Types.ObjectId().toString()
+        };
+
+        // Add the notification job to the queue instead of saving directly
+        await notificationQueue.add("sendNotification", payload, {
+            attempts: 3,
+            backoff: {
+                type: "exponential",
+                delay: 5000,
+            },
         });
-        await notification.save();
 
-        // Push in real-time to the target user's SSE connections (if any)
-        pushToClient(normalizedEmail, notification.toObject());
-
-        res.status(201).json({ success: true, data: notification });
+        res.status(202).json({ success: true, message: "Notification queued successfully" });
     } catch (error) {
         const status = error?.name === "ValidationError" ? 400 : 500
         res.status(status).json({ success: false, message: error.message });
