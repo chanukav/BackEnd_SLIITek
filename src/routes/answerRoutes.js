@@ -7,6 +7,8 @@ const {
   deleteAnswer,
   markBestAnswer,
   getAnswersByQuestion,
+  voteAnswer,
+  unvoteAnswer,
   addCommentToAnswer,
 } = require("../controllers/answerController");
 
@@ -16,5 +18,7 @@ router.put("/:answerId", protect, editAnswer);
 router.delete("/:answerId", protect, deleteAnswer);
 router.patch("/:answerId/best", protect, markBestAnswer);
 router.post("/:answerId/comments", protect, addCommentToAnswer);
+router.post("/:answerId/vote", protect, voteAnswer);
+router.delete("/:answerId/vote", protect, unvoteAnswer);
 
 module.exports = router;

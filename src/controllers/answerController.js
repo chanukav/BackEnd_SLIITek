@@ -1,17 +1,38 @@
 const Answer = require("../models/Answer");
 const Question = require("../models/Question");
 const Comment = require("../models/Comment");
+const AnswerVote = require("../models/AnswerVote");
 const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+
+// Optional auth helper: if `Authorization: Bearer <token>` exists and is valid,
+// returns the userId; otherwise returns null.
+const getUserIdFromAuthHeaderOptional = (req) => {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return null;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return decoded?.id ? decoded.id.toString() : null;
+  } catch {
+    return null;
+  }
+};
 
 const postAnswer = async (req, res) => {
   try {
     const { questionId } = req.params;
-    const { body } = req.body;
+    const { body, parentAnswerId = null } = req.body;
 
     if (!isValidObjectId(questionId)) {
       return res.status(400).json({ message: "That question id doesn’t look valid." });
+    }
+
+    if (parentAnswerId && !isValidObjectId(parentAnswerId)) {
+      return res.status(400).json({ message: "That parent answer id doesn’t look valid." });
     }
 
     if (typeof body !== "string") {
@@ -35,10 +56,22 @@ const postAnswer = async (req, res) => {
       return res.status(403).json({ message: "Question is locked" });
     }
 
+    // If parentAnswerId is provided, check if it exists and belongs to the same question
+    if (parentAnswerId) {
+      const parentAnswer = await Answer.findById(parentAnswerId);
+      if (!parentAnswer) {
+        return res.status(404).json({ message: "Parent answer not found" });
+      }
+      if (parentAnswer.questionId.toString() !== questionId) {
+        return res.status(400).json({ message: "Parent answer does not belong to this question" });
+      }
+    }
+
     const answer = await Answer.create({
       questionId,
       authorId: req.user._id,
       body: trimmedBody,
+      parentAnswerId: parentAnswerId || null,
     });
 
     return res.status(201).json({
@@ -110,19 +143,29 @@ const deleteAnswer = async (req, res) => {
       return res.status(403).json({ message: "Not allowed to delete this answer" });
     }
 
+    // Cascade delete nested replies (Facebook-style thread)
+    const collectDescendantIds = async (parentId) => {
+      const children = await Answer.find({ parentAnswerId: parentId }).select("_id").lean();
+      const ids = children.map((c) => c._id);
+      for (const childId of ids) {
+        const descendants = await collectDescendantIds(childId);
+        ids.push(...descendants);
+      }
+      return ids;
+    };
+
+    const idsToDelete = [answer._id, ...(await collectDescendantIds(answer._id))];
+
     const question = await Question.findById(answer.questionId);
-    if (
-      question &&
-      question.bestAnswerId &&
-      question.bestAnswerId.toString() === answer._id.toString()
-    ) {
+    if (question?.bestAnswerId && idsToDelete.some((id) => id.toString() === question.bestAnswerId.toString())) {
       question.bestAnswerId = null;
       question.status = "open";
       await question.save();
     }
 
-    await Comment.deleteMany({ targetType: "answer", targetId: answer._id });
-    await answer.deleteOne();
+    await Comment.deleteMany({ targetType: "answer", targetId: { $in: idsToDelete } });
+    await AnswerVote.deleteMany({ answerId: { $in: idsToDelete } });
+    await Answer.deleteMany({ _id: { $in: idsToDelete } });
 
     return res.json({ message: "Answer deleted successfully" });
   } catch (error) {
@@ -179,11 +222,129 @@ const getAnswersByQuestion = async (req, res) => {
   try {
     const { questionId } = req.params;
 
+    // Fetch all answers for the question
     const answers = await Answer.find({ questionId })
       .populate("authorId", "firstName lastName faculty academicYear role")
-      .sort({ isBest: -1, voteScore: -1, createdAt: -1 });
+      .sort({ voteScore: -1, isBest: -1, createdAt: -1 })
+      .lean();
 
-    return res.json(answers);
+    // If user is authenticated, mark which answers are liked by them.
+    const userId = getUserIdFromAuthHeaderOptional(req);
+    if (userId && answers.length) {
+      const answerIds = answers.map((a) => a._id);
+      const votes = await AnswerVote.find({
+        userId,
+        answerId: { $in: answerIds },
+      })
+        .select("answerId")
+        .lean();
+
+      const likedSet = new Set(votes.map((v) => v.answerId.toString()));
+      answers.forEach((a) => {
+        a.likedByMe = likedSet.has(a._id.toString());
+      });
+    } else {
+      answers.forEach((a) => {
+        a.likedByMe = false;
+      });
+    }
+
+    // Build a map of answers by their _id
+    const answerMap = {};
+    answers.forEach(ans => {
+      ans.replies = [];
+      answerMap[ans._id.toString()] = ans;
+    });
+
+    // Organize answers into a nested structure
+    const nestedAnswers = [];
+    answers.forEach(ans => {
+      if (ans.parentAnswerId) {
+        const parent = answerMap[ans.parentAnswerId.toString()];
+        if (parent) {
+          parent.replies.push(ans);
+        }
+      } else {
+        nestedAnswers.push(ans);
+      }
+    });
+
+    return res.json(nestedAnswers);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+const voteAnswer = async (req, res) => {
+  try {
+    const { answerId } = req.params;
+
+    if (!isValidObjectId(answerId)) {
+      return res.status(400).json({ message: "That answer id doesn’t look valid." });
+    }
+
+    const answer = await Answer.findById(answerId);
+    if (!answer) {
+      return res.status(404).json({ message: "Answer not found" });
+    }
+
+    const vote = {
+      userId: req.user._id,
+      answerId: answer._id,
+    };
+
+    let created = false;
+    try {
+      await AnswerVote.create(vote);
+      created = true;
+    } catch (err) {
+      // Unique constraint: user can vote only once per answer.
+      if (err?.code !== 11000) throw err;
+    }
+
+    if (created) {
+      answer.voteScore = (answer.voteScore || 0) + 1;
+      await answer.save();
+    }
+
+    return res.json({
+      message: created ? "Like recorded" : "Already liked",
+      answerId: answer._id,
+      voteScore: answer.voteScore,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+const unvoteAnswer = async (req, res) => {
+  try {
+    const { answerId } = req.params;
+
+    if (!isValidObjectId(answerId)) {
+      return res.status(400).json({ message: "That answer id doesn’t look valid." });
+    }
+
+    const answer = await Answer.findById(answerId);
+    if (!answer) {
+      return res.status(404).json({ message: "Answer not found" });
+    }
+
+    const deleted = await AnswerVote.findOneAndDelete({
+      userId: req.user._id,
+      answerId: answer._id,
+    });
+
+    if (deleted) {
+      answer.voteScore = Math.max(0, (answer.voteScore || 0) - 1);
+      await answer.save();
+    }
+
+    return res.json({
+      message: deleted ? "Like removed" : "Not liked yet",
+      answerId: answer._id,
+      voteScore: answer.voteScore,
+    });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -226,5 +387,7 @@ module.exports = {
   deleteAnswer,
   markBestAnswer,
   getAnswersByQuestion,
+  voteAnswer,
+  unvoteAnswer,
   addCommentToAnswer,
 };
