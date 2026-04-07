@@ -12,6 +12,8 @@ const {
   deleteQuestion,
   addQuestionImages,
   removeQuestionImage,
+  voteQuestion,
+  unvoteQuestion,
 } = require("../controllers/questionController");
 
 router.get("/", getQuestions);
@@ -19,6 +21,8 @@ router.get("/search", searchQuestions);
 router.get("/suggestions", getQuestionSuggestions);
 router.get("/:id", getQuestionById);
 router.post("/", protect, createQuestion);
+router.post("/:id/vote", protect, voteQuestion);
+router.delete("/:id/vote", protect, unvoteQuestion);
 router.post(
   "/:id/images",
   protect,

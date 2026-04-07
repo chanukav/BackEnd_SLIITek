@@ -4,9 +4,61 @@ const Question = require("../models/Question");
 const Answer = require("../models/Answer");
 const Comment = require("../models/Comment");
 const { uploadQuestionImage, deleteBlobIfExists, hydrateQuestionImages } = require("../utils/azureBlob");
+const QuestionVote = require("../models/QuestionVote");
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
 
 const uploadsRoot = path.join(__dirname, "..", "uploads");
 const MAX_QUESTION_IMAGES = 8;
+
+const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+
+// Optional auth helper: if `Authorization: Bearer <token>` exists and is valid,
+// returns the userId; otherwise returns null.
+const getUserIdFromAuthHeaderOptional = (req) => {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return null;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return decoded?.id ? decoded.id.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
+const attachQuestionCountsAndMyVote = async (req, questionsPlain) => {
+  if (!Array.isArray(questionsPlain) || !questionsPlain.length) return questionsPlain;
+
+  const ids = questionsPlain.map((q) => q._id).filter(Boolean);
+  const counts = await Answer.aggregate([
+    { $match: { questionId: { $in: ids } } },
+    { $group: { _id: "$questionId", count: { $sum: 1 } } },
+  ]);
+  const countMap = new Map(counts.map((r) => [r._id.toString(), r.count]));
+
+  const userId = getUserIdFromAuthHeaderOptional(req);
+  let likedSet = new Set();
+  if (userId) {
+    const votes = await QuestionVote.find({
+      userId,
+      questionId: { $in: ids },
+    })
+      .select("questionId")
+      .lean();
+    likedSet = new Set(votes.map((v) => v.questionId.toString()));
+  }
+
+  return questionsPlain.map((q) => {
+    const idStr = q._id?.toString?.() || String(q._id);
+    return {
+      ...q,
+      answerCount: countMap.get(idStr) || 0,
+      likedByMe: likedSet.has(idStr),
+    };
+  });
+};
 
 const unlinkUploadUrl = (url) => {
   if (typeof url !== "string" || !url.startsWith("/uploads/")) return;
@@ -81,7 +133,8 @@ const getQuestions = async (req, res) => {
       .populate("bestAnswerId")
       .sort({ createdAt: -1 });
 
-    const out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    let out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    out = await attachQuestionCountsAndMyVote(req, out);
     return res.json(out);
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -98,7 +151,9 @@ const getQuestionById = async (req, res) => {
       return res.status(404).json({ message: "Question not found" });
     }
 
-    return res.json(await hydrateQuestionImages(question.toObject()));
+    const hydrated = await hydrateQuestionImages(question.toObject());
+    const [withCounts] = await attachQuestionCountsAndMyVote(req, [hydrated]);
+    return res.json(withCounts);
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -247,7 +302,8 @@ const searchQuestions = async (req, res) => {
       .skip(skip)
       .limit(limit);
 
-    const out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    let out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    out = await attachQuestionCountsAndMyVote(req, out);
     return res.json(out);
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -353,6 +409,77 @@ const removeQuestionImage = async (req, res) => {
   }
 };
 
+const voteQuestion = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: "That question id doesn’t look valid." });
+    }
+
+    const question = await Question.findById(id);
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+
+    let created = false;
+    try {
+      await QuestionVote.create({ userId: req.user._id, questionId: question._id });
+      created = true;
+    } catch (err) {
+      if (err?.code !== 11000) throw err;
+    }
+
+    if (created) {
+      question.voteScore = (question.voteScore || 0) + 1;
+      await question.save();
+    }
+
+    return res.json({
+      message: created ? "Vote recorded" : "Already voted",
+      questionId: question._id,
+      voteScore: question.voteScore || 0,
+      likedByMe: true,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+const unvoteQuestion = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: "That question id doesn’t look valid." });
+    }
+
+    const question = await Question.findById(id);
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+
+    const deleted = await QuestionVote.findOneAndDelete({
+      userId: req.user._id,
+      questionId: question._id,
+    });
+
+    if (deleted) {
+      question.voteScore = Math.max(0, (question.voteScore || 0) - 1);
+      await question.save();
+    }
+
+    return res.json({
+      message: deleted ? "Vote removed" : "Not voted yet",
+      questionId: question._id,
+      voteScore: question.voteScore || 0,
+      likedByMe: false,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 const getQuestionSuggestions = async (req, res) => {
   try {
     const rawTitle = typeof req.query.title === "string" ? req.query.title : "";
@@ -399,4 +526,6 @@ module.exports = {
   deleteQuestion,
   addQuestionImages,
   removeQuestionImage,
+  voteQuestion,
+  unvoteQuestion,
 };
