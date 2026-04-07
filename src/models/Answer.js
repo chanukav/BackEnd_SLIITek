@@ -27,6 +27,12 @@ const answerSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    parentAnswerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Answer",
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true }
 );
