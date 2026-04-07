@@ -88,34 +88,47 @@ const postAnswer = async (req, res) => {
             type: "answer",
             entityType: "Question",
             entityId: question._id.toString(),
+            answerId: answer._id.toString(),
             title: "New Answer",
             message: `${req.user.firstName} ${req.user.lastName} answered your question: "${question.title}"`,
           });
         }
       } else {
-        // Reply to an answer: Notify all users who interacted with this answer thread
+        // Reply to an answer: notify parent author, sibling repliers, ancestor authors, and question owner
         const parentAnswer = await Answer.findById(parentAnswerId);
         if (parentAnswer) {
-          // Find all replies to this parent answer
-          const replies = await Answer.find({ parentAnswerId }).select("authorId").lean();
-          
-          // Collect unique user IDs who interacted with this thread
           const interactUserIds = new Set();
+
           interactUserIds.add(parentAnswer.authorId.toString());
-          replies.forEach(r => interactUserIds.add(r.authorId.toString()));
-          
-          // Remove the user who is currently replying
+
+          const replies = await Answer.find({ parentAnswerId }).select("authorId").lean();
+          replies.forEach((r) => interactUserIds.add(r.authorId.toString()));
+
+          // Walk up so e.g. top-level answer author still gets notified on nested "reply to reply"
+          let ancestorId = parentAnswer.parentAnswerId;
+          while (ancestorId) {
+            const ancestor = await Answer.findById(ancestorId).select("authorId parentAnswerId").lean();
+            if (!ancestor) break;
+            interactUserIds.add(ancestor.authorId.toString());
+            ancestorId = ancestor.parentAnswerId;
+          }
+
+          if (qAuthor && qAuthor._id) {
+            interactUserIds.add(qAuthor._id.toString());
+          }
+
           interactUserIds.delete(req.user._id.toString());
-          
+
           if (interactUserIds.size > 0) {
             const usersToNotify = await User.find({ _id: { $in: Array.from(interactUserIds) } }).select("email");
-            
+
             for (const u of usersToNotify) {
               await notificationQueue.add("new-reply", {
                 email: u.email,
                 type: "comment",
                 entityType: "Answer",
                 entityId: parentAnswerId.toString(),
+                questionId: question._id.toString(),
                 title: "New Reply",
                 message: `${req.user.firstName} ${req.user.lastName} replied to an answer on: "${question.title}"`,
               });
@@ -513,6 +526,7 @@ const addCommentToAnswer = async (req, res) => {
             type: "comment",
             entityType: "Answer",
             entityId: answerId.toString(),
+            questionId: answer.questionId.toString(),
             title: "New Comment",
             message: `${req.user.firstName} ${req.user.lastName} commented on an answer you follow.`,
           });

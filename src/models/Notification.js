@@ -34,6 +34,18 @@ const notificationSchema = new mongoose.Schema({
     required: true,
     trim: true,
   },
+  /** When entity is an Answer (or thread), links UI to the parent question. */
+  questionId: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  /** For "new answer" (and similar), scroll target on the question page. */
+  answerId: {
+    type: String,
+    trim: true,
+    default: null,
+  },
   title: {
     type: String,
     required: true,

@@ -585,6 +585,8 @@ const loginUser = async (req, res) => {
       success: true,
       message: "Login successful",
       token: accessToken,
+      // Also returned for SPAs on a different dev port — cookie may not always be sent on XHR.
+      refreshToken,
       user: buildUserPayload(user),
     });
   } catch (error) {
@@ -1077,7 +1079,7 @@ const logoutUser = async (req, res) => {
 // ================= REFRESH TOKEN =================
 const refreshToken = async (req, res) => {
   try {
-    const token = req.cookies.refreshToken || req.body.refreshToken;
+    const token = req.body.refreshToken || req.cookies.refreshToken;
 
     if (!token) {
       return res.status(401).json({
