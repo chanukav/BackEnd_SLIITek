@@ -83,10 +83,15 @@ async function getViewUrlForQuestionImage(img) {
 async function hydrateQuestionImages(questionPlain) {
   if (!questionPlain?.images?.length) return questionPlain;
   const images = await Promise.all(
-    questionPlain.images.map(async (img) => ({
-      ...img,
-      viewUrl: await getViewUrlForQuestionImage(img),
-    }))
+    questionPlain.images.map(async (img) => {
+      const viewUrl = await getViewUrlForQuestionImage(img);
+      // For private containers, overwrite url with SAS so ALL existing UIs work.
+      return {
+        ...img,
+        viewUrl,
+        url: viewUrl || img.url,
+      };
+    })
   );
   return { ...questionPlain, images };
 }
