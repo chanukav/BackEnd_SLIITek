@@ -270,15 +270,17 @@ exports.markAllAsRead = async (req, res) => {
             { $addToSet: { readBy: normalizedEmail }, $set: { isRead: false } }
         );
 
-        // Broadcasts: only staff may mark all read for themselves
-        if (isPrivileged) {
-            await Notification.updateMany(
-                {
-                    $and: [notExpiredWhere(), { email: "all" }],
-                },
-                { $addToSet: { readBy: normalizedEmail } }
-            );
-        }
+        // Broadcasts: each viewer records read in readBy (per-user only)
+        await Notification.updateMany(
+            {
+                $and: [
+                    notExpiredWhere(),
+                    notHiddenForRecipient(normalizedEmail),
+                    { email: "all" },
+                ],
+            },
+            { $addToSet: { readBy: normalizedEmail } }
+        );
 
         res.status(200).json({ success: true, message: "All notifications marked as read" });
     } catch (error) {
@@ -318,12 +320,6 @@ exports.markAsRead = async (req, res) => {
         }
 
         if (notification.email === "all") {
-            if (!isPrivileged) {
-                return res.status(403).json({
-                    success: false,
-                    message: "Broadcast notifications cannot be marked as read",
-                });
-            }
             if (!notification.readBy.includes(reqEmail)) {
                 notification.readBy.push(reqEmail);
                 await notification.save();
@@ -384,12 +380,6 @@ exports.markAsUnread = async (req, res) => {
         }
 
         if (notification.email === "all") {
-            if (!isPrivileged) {
-                return res.status(403).json({
-                    success: false,
-                    message: "Broadcast notifications cannot be marked as unread",
-                });
-            }
             notification.readBy = notification.readBy.filter(e => e !== reqEmail);
             await notification.save();
         } else if (staffSender(notification)) {
