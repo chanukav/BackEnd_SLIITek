@@ -7,7 +7,8 @@ const {
     markAllAsRead,
     markAsRead,
     markAsUnread,
-    deleteNotification
+    deleteNotification,
+    updateSentNotification,
 } = require('../controllers/notificationController');
 const { protect, protectSSE, authorize } = require('../middleware/authMiddleware');
 
@@ -33,7 +34,8 @@ router.route('/user/:email')
 router.route('/user/:email/read-all')
     .put(markAllAsRead);
 
-// Single notification — mark read / delete (ownership enforced in controller)
+// Single notification — update sent copy (staff, sender only); mark read / delete
+router.patch('/:id', authorize('admin', 'moderator'), updateSentNotification);
 router.route('/:id')
     .put(markAsRead)
     .delete(deleteNotification);

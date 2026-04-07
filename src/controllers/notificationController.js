@@ -461,3 +461,103 @@ exports.deleteNotification = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// ─────────────────────────────────────────────
+// Update a notification you sent (Sent by me) — admin / moderator only
+// ─────────────────────────────────────────────
+exports.updateSentNotification = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Invalid notification id" });
+        }
+
+        const requester = req.user;
+        if (requester.role !== "admin" && requester.role !== "moderator") {
+            return res.status(403).json({ success: false, message: "Forbidden" });
+        }
+
+        const notification = await Notification.findById(id);
+        if (!notification) {
+            return res.status(404).json({ success: false, message: "Notification not found" });
+        }
+        if (!isNotificationActive(notification)) {
+            return res.status(404).json({ success: false, message: "Notification expired" });
+        }
+
+        const reqEmail = requester.email.toLowerCase();
+        const docSender = (notification.senderEmail || "").toLowerCase().trim();
+        if (!docSender || docSender !== reqEmail) {
+            return res.status(403).json({
+                success: false,
+                message: "You can only edit notifications you sent",
+            });
+        }
+
+        const { type, title, message, entityType, entityId } = req.body;
+        const allowedTypes = ["answer", "comment", "best_answer", "report_update", "announcement"];
+        let touched = false;
+
+        if (type !== undefined) {
+            if (!allowedTypes.includes(type)) {
+                return res.status(400).json({ success: false, message: "Invalid notification type" });
+            }
+            notification.type = type;
+            touched = true;
+        }
+        if (title !== undefined) {
+            const t = typeof title === "string" ? title.trim() : "";
+            if (t.length < 3 || t.length > 120) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Title must be between 3 and 120 characters",
+                });
+            }
+            notification.title = t;
+            touched = true;
+        }
+        if (message !== undefined) {
+            const m = typeof message === "string" ? message.trim() : "";
+            if (m.length < 5 || m.length > 800) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Message must be between 5 and 800 characters",
+                });
+            }
+            notification.message = m;
+            touched = true;
+        }
+        if (entityType !== undefined) {
+            const et = typeof entityType === "string" ? entityType.trim() : "";
+            if (!et || et.length > 80) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Entity type is required and must be at most 80 characters",
+                });
+            }
+            notification.entityType = et;
+            touched = true;
+        }
+        if (entityId !== undefined) {
+            const eid = typeof entityId === "string" ? entityId.trim() : "";
+            if (eid.length > 200) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Entity ID must be at most 200 characters",
+                });
+            }
+            notification.entityId = eid || new mongoose.Types.ObjectId().toString();
+            touched = true;
+        }
+
+        if (!touched) {
+            return res.status(400).json({ success: false, message: "No valid fields to update" });
+        }
+
+        await notification.save();
+        res.status(200).json({ success: true, data: notification });
+    } catch (error) {
+        const status = error?.name === "ValidationError" ? 400 : 500;
+        res.status(status).json({ success: false, message: error.message });
+    }
+};
