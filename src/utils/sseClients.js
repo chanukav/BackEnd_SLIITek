@@ -1,3 +1,5 @@
+const { subscriber } = require("./pubsub");
+
 /**
  * In-memory SSE client registry.
  * Maps normalised email → Set of active SSE response objects.
@@ -9,6 +11,40 @@
  * createNotification controller can import and share the same Map instance.
  */
 const sseClients = new Map();
+
+// Listen for notifications published by any worker/server instance
+subscriber.subscribe("notifications", (err) => {
+  if (err) {
+    console.error("❌ Failed to subscribe to notifications channel:", err);
+  } else {
+    console.log("📡 Subscribed to Redis 'notifications' channel for SSE");
+  }
+});
+
+subscriber.on("message", (channel, message) => {
+  if (channel === "notifications") {
+    try {
+      const notification = JSON.parse(message);
+      if (notification.email === "all") {
+        // Broadcast to all connected SSE clients
+        const data = JSON.stringify(notification);
+        for (const [email, set] of sseClients.entries()) {
+          for (const res of set) {
+            try {
+              res.write(`data: ${data}\n\n`);
+            } catch {
+              set.delete(res);
+            }
+          }
+        }
+      } else {
+        pushToClient(notification.email, notification);
+      }
+    } catch (err) {
+      console.error("❌ Error parsing notification message:", err);
+    }
+  }
+});
 
 /**
  * Register an SSE response for a given email.

@@ -2,6 +2,8 @@ const Answer = require("../models/Answer");
 const Question = require("../models/Question");
 const Comment = require("../models/Comment");
 const AnswerVote = require("../models/AnswerVote");
+const User = require("../models/user");
+const { notificationQueue } = require("../queues/notificationQueue");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 
@@ -73,6 +75,57 @@ const postAnswer = async (req, res) => {
       body: trimmedBody,
       parentAnswerId: parentAnswerId || null,
     });
+
+    // --- Notification Logic ---
+    try {
+      const qAuthor = await User.findById(question.authorId).select("email _id");
+      
+      if (!parentAnswerId) {
+        // New top-level answer: Notify ONLY the question author
+        if (qAuthor && qAuthor._id.toString() !== req.user._id.toString()) {
+          await notificationQueue.add("new-answer", {
+            email: qAuthor.email,
+            type: "answer",
+            entityType: "Question",
+            entityId: question._id.toString(),
+            title: "New Answer",
+            message: `${req.user.firstName} ${req.user.lastName} answered your question: "${question.title}"`,
+          });
+        }
+      } else {
+        // Reply to an answer: Notify all users who interacted with this answer thread
+        const parentAnswer = await Answer.findById(parentAnswerId);
+        if (parentAnswer) {
+          // Find all replies to this parent answer
+          const replies = await Answer.find({ parentAnswerId }).select("authorId").lean();
+          
+          // Collect unique user IDs who interacted with this thread
+          const interactUserIds = new Set();
+          interactUserIds.add(parentAnswer.authorId.toString());
+          replies.forEach(r => interactUserIds.add(r.authorId.toString()));
+          
+          // Remove the user who is currently replying
+          interactUserIds.delete(req.user._id.toString());
+          
+          if (interactUserIds.size > 0) {
+            const usersToNotify = await User.find({ _id: { $in: Array.from(interactUserIds) } }).select("email");
+            
+            for (const u of usersToNotify) {
+              await notificationQueue.add("new-reply", {
+                email: u.email,
+                type: "comment",
+                entityType: "Answer",
+                entityId: parentAnswerId.toString(),
+                title: "New Reply",
+                message: `${req.user.firstName} ${req.user.lastName} replied to an answer on: "${question.title}"`,
+              });
+            }
+          }
+        }
+      }
+    } catch (notifErr) {
+      console.error("Failed to send notifications:", notifErr);
+    }
 
     return res.status(201).json({
       message: "Answer posted successfully",
@@ -371,6 +424,37 @@ const addCommentToAnswer = async (req, res) => {
       body,
       parentCommentId,
     });
+
+    // --- Notification Logic for Comment ---
+    try {
+      // Find all comments on this answer
+      const comments = await Comment.find({ targetType: "answer", targetId: answerId }).select("authorId").lean();
+      
+      // Collect unique user IDs who interacted with this answer (answer author + comment authors)
+      const interactUserIds = new Set();
+      interactUserIds.add(answer.authorId.toString());
+      comments.forEach(c => interactUserIds.add(c.authorId.toString()));
+      
+      // Remove the user who is currently commenting
+      interactUserIds.delete(req.user._id.toString());
+      
+      if (interactUserIds.size > 0) {
+        const usersToNotify = await User.find({ _id: { $in: Array.from(interactUserIds) } }).select("email");
+        
+        for (const u of usersToNotify) {
+          await notificationQueue.add("new-comment", {
+            email: u.email,
+            type: "comment",
+            entityType: "Answer",
+            entityId: answerId.toString(),
+            title: "New Comment",
+            message: `${req.user.firstName} ${req.user.lastName} commented on an answer you follow.`,
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.error("Failed to send notifications for comment:", notifErr);
+    }
 
     return res.status(201).json({
       message: "Comment added to answer",
