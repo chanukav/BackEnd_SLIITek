@@ -2,7 +2,7 @@ const nodemailer = require("nodemailer");
 
 /**
  * Gmail app passwords are often pasted with spaces; SMTP expects 16 chars without spaces.
- * Supports EMAIL_USER/EMAIL_PASS (main .env) or EMAIL/PASS (otp-gmail-backend/.env style).
+ * Supports EMAIL_USER/EMAIL_PASS or EMAIL/PASS for compatibility.
  */
 const getSmtpCredentials = () => {
   const user = (process.env.EMAIL_USER || process.env.EMAIL || "").trim();
