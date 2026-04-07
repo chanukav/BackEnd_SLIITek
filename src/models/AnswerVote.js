@@ -15,6 +15,11 @@ const answerVoteSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    value: {
+      type: Number,
+      enum: [1, -1],
+      default: 1,
+    },
   },
   { timestamps: true }
 );

@@ -1,6 +1,35 @@
+const path = require("path");
+const fs = require("fs");
 const Question = require("../models/Question");
 const Answer = require("../models/Answer");
 const Comment = require("../models/Comment");
+const { uploadQuestionImage, deleteBlobIfExists, hydrateQuestionImages } = require("../utils/azureBlob");
+
+const uploadsRoot = path.join(__dirname, "..", "uploads");
+const MAX_QUESTION_IMAGES = 8;
+
+const unlinkUploadUrl = (url) => {
+  if (typeof url !== "string" || !url.startsWith("/uploads/")) return;
+  const rel = url.replace(/^\/uploads\//, "");
+  const abs = path.join(uploadsRoot, rel);
+  const normRoot = path.normalize(uploadsRoot + path.sep);
+  const normAbs = path.normalize(abs);
+  if (!normAbs.startsWith(normRoot)) return;
+  fs.unlink(normAbs, () => {});
+};
+
+const deleteQuestionImageAsset = async (img) => {
+  if (!img) return;
+  // New approach: Azure blob
+  if (img.blobName) {
+    try {
+      await deleteBlobIfExists(img.blobName);
+    } catch {}
+    return;
+  }
+  // Backward compatibility: local /uploads URLs
+  if (img.url) unlinkUploadUrl(img.url);
+};
 
 const QUESTION_CATEGORIES = [
   "Academic",
@@ -52,7 +81,8 @@ const getQuestions = async (req, res) => {
       .populate("bestAnswerId")
       .sort({ createdAt: -1 });
 
-    return res.json(questions);
+    const out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    return res.json(out);
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -68,7 +98,7 @@ const getQuestionById = async (req, res) => {
       return res.status(404).json({ message: "Question not found" });
     }
 
-    return res.json(question);
+    return res.json(await hydrateQuestionImages(question.toObject()));
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -116,7 +146,7 @@ const updateQuestion = async (req, res) => {
 
     return res.json({
       message: "Question updated successfully",
-      question: populated,
+      question: await hydrateQuestionImages(populated.toObject()),
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -145,6 +175,10 @@ const deleteQuestion = async (req, res) => {
     }
     await Comment.deleteMany({ targetType: "question", targetId: question._id });
     await Answer.deleteMany({ questionId: question._id });
+    for (const img of question.images || []) {
+      // eslint-disable-next-line no-await-in-loop
+      await deleteQuestionImageAsset(img);
+    }
     await question.deleteOne();
 
     return res.json({ message: "Question deleted successfully" });
@@ -213,7 +247,107 @@ const searchQuestions = async (req, res) => {
       .skip(skip)
       .limit(limit);
 
-    return res.json(questions);
+    const out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    return res.json(out);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+const addQuestionImages = async (req, res) => {
+  try {
+    const question = await Question.findById(req.params.id);
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+
+    if (question.authorId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only the question owner can add images" });
+    }
+
+    const files = req.files || [];
+    if (!files.length) {
+      return res.status(400).json({ message: "No image files uploaded" });
+    }
+
+    const currentCount = (question.images || []).length;
+    if (currentCount + files.length > MAX_QUESTION_IMAGES) {
+      return res.status(400).json({
+        message: `You can attach at most ${MAX_QUESTION_IMAGES} images per question`,
+      });
+    }
+
+    const newImages = [];
+    for (const f of files) {
+      // eslint-disable-next-line no-await-in-loop
+      const uploaded = await uploadQuestionImage({
+        questionId: question._id.toString(),
+        buffer: f.buffer,
+        contentType: f.mimetype,
+        originalName: f.originalname,
+      });
+      newImages.push({
+        url: uploaded.url,
+        blobName: uploaded.blobName,
+        uploadedAt: new Date(),
+      });
+    }
+
+    question.images = [...(question.images || []), ...newImages];
+    await question.save();
+
+    const populated = await Question.findById(question._id)
+      .populate("authorId", "firstName lastName email role")
+      .populate("bestAnswerId");
+
+    return res.status(201).json({
+      message: "Images uploaded",
+      question: await hydrateQuestionImages(populated.toObject()),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+const removeQuestionImage = async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    if (!url || typeof url !== "string" || !url.trim()) {
+      return res.status(400).json({ message: "Image url is required" });
+    }
+
+    const trimmedUrl = url.trim();
+
+    const question = await Question.findById(req.params.id);
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+
+    if (question.authorId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only the question owner can remove images" });
+    }
+
+    const images = question.images || [];
+    const idx = images.findIndex((img) => img.url === trimmedUrl);
+    if (idx === -1) {
+      return res.status(404).json({ message: "Image not found on this question" });
+    }
+
+    const [removed] = images.splice(idx, 1);
+    question.images = images;
+    await question.save();
+
+    await deleteQuestionImageAsset(removed);
+
+    const populated = await Question.findById(question._id)
+      .populate("authorId", "firstName lastName email role")
+      .populate("bestAnswerId");
+
+    return res.json({
+      message: "Image removed",
+      question: await hydrateQuestionImages(populated.toObject()),
+    });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -263,4 +397,6 @@ module.exports = {
   getQuestionSuggestions,
   updateQuestion,
   deleteQuestion,
+  addQuestionImages,
+  removeQuestionImage,
 };

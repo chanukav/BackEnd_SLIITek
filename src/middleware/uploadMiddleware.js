@@ -58,5 +58,33 @@ const uploadAvatar = multer({
   fileFilter,
 });
 
+const questionImagesDir = path.join(uploadPath, "questions");
+if (!fs.existsSync(questionImagesDir)) {
+  fs.mkdirSync(questionImagesDir, { recursive: true });
+}
+
+// Question images are uploaded to external storage (Azure Blob).
+// Use memory storage to avoid writing to local disk.
+const questionImageStorage = multer.memoryStorage();
+
+const questionImageFilter = (req, file, cb) => {
+  const extOk = /jpe?g|png|gif|webp/i.test(path.extname(file.originalname));
+  const mimeOk = /^image\/(jpeg|png|gif|webp)$/i.test(file.mimetype);
+  if (extOk && mimeOk) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only JPEG, PNG, GIF, and WebP images are allowed"));
+  }
+};
+
+const uploadQuestionImages = multer({
+  storage: questionImageStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter: questionImageFilter,
+});
+
 module.exports = upload;
 module.exports.uploadAvatar = uploadAvatar;
+module.exports.uploadQuestionImages = uploadQuestionImages;

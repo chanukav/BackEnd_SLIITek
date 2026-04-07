@@ -236,16 +236,26 @@ const getAnswersByQuestion = async (req, res) => {
         userId,
         answerId: { $in: answerIds },
       })
-        .select("answerId")
+        .select("answerId value")
         .lean();
 
-      const likedSet = new Set(votes.map((v) => v.answerId.toString()));
+      const voteMap = new Map(
+        votes.map((v) => [
+          v.answerId.toString(),
+          v.value === -1 ? -1 : 1,
+        ])
+      );
       answers.forEach((a) => {
-        a.likedByMe = likedSet.has(a._id.toString());
+        const mv = voteMap.get(a._id.toString()) ?? 0;
+        a.myVote = mv;
+        a.likedByMe = mv === 1;
+        a.dislikedByMe = mv === -1;
       });
     } else {
       answers.forEach((a) => {
+        a.myVote = 0;
         a.likedByMe = false;
+        a.dislikedByMe = false;
       });
     }
 
@@ -275,9 +285,12 @@ const getAnswersByQuestion = async (req, res) => {
   }
 };
 
+const normalizeVoteValue = (doc) => (doc?.value === -1 ? -1 : 1);
+
 const voteAnswer = async (req, res) => {
   try {
     const { answerId } = req.params;
+    const type = req.body?.type === "dislike" ? "dislike" : "like";
 
     if (!isValidObjectId(answerId)) {
       return res.status(400).json({ message: "That answer id doesn’t look valid." });
@@ -288,29 +301,73 @@ const voteAnswer = async (req, res) => {
       return res.status(404).json({ message: "Answer not found" });
     }
 
-    const vote = {
+    const existing = await AnswerVote.findOne({
       userId: req.user._id,
       answerId: answer._id,
-    };
+    });
 
-    let created = false;
-    try {
-      await AnswerVote.create(vote);
-      created = true;
-    } catch (err) {
-      // Unique constraint: user can vote only once per answer.
-      if (err?.code !== 11000) throw err;
+    const prev = existing ? normalizeVoteValue(existing) : null;
+
+    if (type === "like") {
+      if (prev === 1) {
+        await AnswerVote.deleteOne({ _id: existing._id });
+        answer.voteScore = Math.max(0, (answer.voteScore || 0) - 1);
+      } else if (prev === -1) {
+        existing.value = 1;
+        await existing.save();
+        answer.dislikeCount = Math.max(0, (answer.dislikeCount || 0) - 1);
+        answer.voteScore = (answer.voteScore || 0) + 1;
+      } else {
+        try {
+          await AnswerVote.create({
+            userId: req.user._id,
+            answerId: answer._id,
+            value: 1,
+          });
+          answer.voteScore = (answer.voteScore || 0) + 1;
+        } catch (err) {
+          if (err?.code !== 11000) throw err;
+        }
+      }
+    } else {
+      if (prev === -1) {
+        await AnswerVote.deleteOne({ _id: existing._id });
+        answer.dislikeCount = Math.max(0, (answer.dislikeCount || 0) - 1);
+      } else if (prev === 1) {
+        existing.value = -1;
+        await existing.save();
+        answer.voteScore = Math.max(0, (answer.voteScore || 0) - 1);
+        answer.dislikeCount = (answer.dislikeCount || 0) + 1;
+      } else {
+        try {
+          await AnswerVote.create({
+            userId: req.user._id,
+            answerId: answer._id,
+            value: -1,
+          });
+          answer.dislikeCount = (answer.dislikeCount || 0) + 1;
+        } catch (err) {
+          if (err?.code !== 11000) throw err;
+        }
+      }
     }
 
-    if (created) {
-      answer.voteScore = (answer.voteScore || 0) + 1;
-      await answer.save();
-    }
+    await answer.save();
+
+    const row = await AnswerVote.findOne({
+      userId: req.user._id,
+      answerId: answer._id,
+    }).lean();
+    const myVote = row ? normalizeVoteValue(row) : 0;
 
     return res.json({
-      message: created ? "Like recorded" : "Already liked",
+      message: "Vote updated",
       answerId: answer._id,
       voteScore: answer.voteScore,
+      dislikeCount: answer.dislikeCount || 0,
+      myVote,
+      likedByMe: myVote === 1,
+      dislikedByMe: myVote === -1,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -336,14 +393,23 @@ const unvoteAnswer = async (req, res) => {
     });
 
     if (deleted) {
-      answer.voteScore = Math.max(0, (answer.voteScore || 0) - 1);
+      const was = normalizeVoteValue(deleted);
+      if (was === 1) {
+        answer.voteScore = Math.max(0, (answer.voteScore || 0) - 1);
+      } else {
+        answer.dislikeCount = Math.max(0, (answer.dislikeCount || 0) - 1);
+      }
       await answer.save();
     }
 
     return res.json({
-      message: deleted ? "Like removed" : "Not liked yet",
+      message: deleted ? "Vote removed" : "No vote yet",
       answerId: answer._id,
       voteScore: answer.voteScore,
+      dislikeCount: answer.dislikeCount || 0,
+      myVote: 0,
+      likedByMe: false,
+      dislikedByMe: false,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
