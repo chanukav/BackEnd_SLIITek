@@ -37,6 +37,13 @@ const questionSchema = new mongoose.Schema(
     },
     voteScore: { type: Number, default: 0 },
     views: { type: Number, default: 0 },
+    images: [
+      {
+        url: { type: String, required: true, trim: true },
+        blobName: { type: String, trim: true, default: "" },
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true }
 );
