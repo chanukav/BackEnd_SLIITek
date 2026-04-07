@@ -3,6 +3,26 @@ const mongoose = require('mongoose');
 const { addClient, removeClient, pushToClient } = require('../utils/sseClients');
 const { notificationQueue } = require('../queues/notificationQueue');
 const { notExpiredWhere, isNotificationActive } = require('../utils/notificationExpiry');
+const { notHiddenForRecipient } = require('../utils/notificationInboxFilters');
+
+const staffSender = (n) => {
+    const s = n?.senderEmail;
+    return typeof s === 'string' && s.trim().length > 0;
+};
+
+function mapInboxIsReadForRecipient(notifications, normalizedEmail) {
+    return notifications.map((n) => {
+        if (n.email === 'all') {
+            n.isRead = !!(n.readBy && n.readBy.includes(normalizedEmail));
+        } else if (staffSender(n)) {
+            const inReadBy = !!(n.readBy && n.readBy.includes(normalizedEmail));
+            const legacyRead =
+                String(n.email).toLowerCase() === normalizedEmail && n.isRead === true;
+            n.isRead = inReadBy || legacyRead;
+        }
+        return n;
+    });
+}
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -133,18 +153,23 @@ exports.getAllNotifications = async (req, res) => {
             ? { $and: [filter, notExpiredWhere()] }
             : notExpiredWhere();
 
-        const [notifications, total] = await Promise.all([
-            Notification.find(activeFilter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+        const [rawList, total] = await Promise.all([
+            Notification.find(activeFilter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
             Notification.countDocuments(activeFilter),
         ]);
 
+        // "Sent by me": recipient read state must not change read/unread appearance for staff
+        const data = req.query.senderEmail
+            ? rawList.map((n) => ({ ...n, isRead: false }))
+            : rawList;
+
         res.status(200).json({
             success: true,
-            count: notifications.length,
+            count: data.length,
             total,
             page,
             pages: Math.ceil(total / limit),
-            data: notifications,
+            data,
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -171,10 +196,11 @@ exports.getUserNotifications = async (req, res) => {
 
         const safe = escapeRegExp(normalizedEmail)
         
-        // Fetch both user-specific notifications and global broadcasts (non-expired only)
+        // Fetch both user-specific notifications and global broadcasts (non-expired, not recipient-dismissed)
         const notifications = await Notification.find({
             $and: [
                 notExpiredWhere(),
+                notHiddenForRecipient(normalizedEmail),
                 {
                     $or: [
                         { email: { $regex: `^${safe}$`, $options: "i" } },
@@ -184,13 +210,7 @@ exports.getUserNotifications = async (req, res) => {
             ],
         }).sort({ createdAt: -1 }).lean();
 
-        // Map isRead for global notifications
-        const mapped = notifications.map(n => {
-            if (n.email === "all") {
-                n.isRead = n.readBy && n.readBy.includes(normalizedEmail);
-            }
-            return n;
-        });
+        const mapped = mapInboxIsReadForRecipient(notifications, normalizedEmail);
 
         res.status(200).json({ success: true, count: mapped.length, data: mapped });
     } catch (error) {
@@ -218,29 +238,48 @@ exports.markAllAsRead = async (req, res) => {
 
         const safe = escapeRegExp(normalizedEmail);
         
-        // Update individual notifications (active only)
+        // System-generated directed (no staff sender): flip isRead
         await Notification.updateMany(
             {
                 $and: [
                     notExpiredWhere(),
+                    notHiddenForRecipient(normalizedEmail),
                     { email: { $regex: `^${safe}$`, $options: "i" }, isRead: false },
+                    {
+                        $or: [
+                            { senderEmail: { $exists: false } },
+                            { senderEmail: null },
+                            { senderEmail: "" },
+                        ],
+                    },
                 ],
             },
             { $set: { isRead: true } }
         );
 
-        // Update global notifications
+        // Staff-sent directed to this user: per-recipient read in readBy (does not touch isRead)
         await Notification.updateMany(
             {
                 $and: [
                     notExpiredWhere(),
-                    { email: "all", readBy: { $ne: normalizedEmail } },
+                    notHiddenForRecipient(normalizedEmail),
+                    { email: { $regex: `^${safe}$`, $options: "i" } },
+                    { senderEmail: { $gt: "" } },
                 ],
             },
-            { $push: { readBy: normalizedEmail } }
+            { $addToSet: { readBy: normalizedEmail }, $set: { isRead: false } }
         );
 
-        // We don't have an exact count of modified global ones easily, but success is true
+        // Broadcasts: only staff may mark all read for themselves
+        if (isPrivileged) {
+            await Notification.updateMany(
+                {
+                    $and: [notExpiredWhere(), { email: "all" }],
+                },
+                { $addToSet: { readBy: normalizedEmail } }
+            );
+        }
+
         res.status(200).json({ success: true, message: "All notifications marked as read" });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -269,19 +308,43 @@ exports.markAsRead = async (req, res) => {
             return res.status(403).json({ success: false, message: "Forbidden: not your notification" });
         }
 
+        const reqEmail = requester.email.toLowerCase();
+        if (
+            !isPrivileged &&
+            notification.hiddenFor &&
+            notification.hiddenFor.includes(reqEmail)
+        ) {
+            return res.status(404).json({ success: false, message: "Notification not found" });
+        }
+
         if (notification.email === "all") {
-            if (!notification.readBy.includes(requester.email.toLowerCase())) {
-                notification.readBy.push(requester.email.toLowerCase());
+            if (!isPrivileged) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Broadcast notifications cannot be marked as read",
+                });
+            }
+            if (!notification.readBy.includes(reqEmail)) {
+                notification.readBy.push(reqEmail);
                 await notification.save();
             }
+        } else if (staffSender(notification)) {
+            if (!notification.readBy.includes(reqEmail)) {
+                notification.readBy.push(reqEmail);
+            }
+            notification.isRead = false;
+            await notification.save();
         } else {
             notification.isRead = true;
             await notification.save();
         }
 
-        // Return mapped version
         const mapped = notification.toObject();
-        if (mapped.email === "all") mapped.isRead = true;
+        if (mapped.email === "all") {
+            mapped.isRead = mapped.readBy && mapped.readBy.includes(reqEmail);
+        } else if (staffSender(mapped)) {
+            mapped.isRead = !!(mapped.readBy && mapped.readBy.includes(reqEmail));
+        }
 
         res.status(200).json({ success: true, data: mapped });
     } catch (error) {
@@ -311,17 +374,39 @@ exports.markAsUnread = async (req, res) => {
             return res.status(403).json({ success: false, message: "Forbidden: not your notification" });
         }
 
+        const reqEmail = requester.email.toLowerCase();
+        if (
+            !isPrivileged &&
+            notification.hiddenFor &&
+            notification.hiddenFor.includes(reqEmail)
+        ) {
+            return res.status(404).json({ success: false, message: "Notification not found" });
+        }
+
         if (notification.email === "all") {
-            notification.readBy = notification.readBy.filter(e => e !== requester.email.toLowerCase());
+            if (!isPrivileged) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Broadcast notifications cannot be marked as unread",
+                });
+            }
+            notification.readBy = notification.readBy.filter(e => e !== reqEmail);
+            await notification.save();
+        } else if (staffSender(notification)) {
+            notification.readBy = notification.readBy.filter(e => e !== reqEmail);
+            notification.isRead = false;
             await notification.save();
         } else {
             notification.isRead = false;
             await notification.save();
         }
 
-        // Return mapped version
         const mapped = notification.toObject();
-        if (mapped.email === "all") mapped.isRead = false;
+        if (mapped.email === "all") {
+            mapped.isRead = !!(mapped.readBy && mapped.readBy.includes(reqEmail));
+        } else if (staffSender(mapped)) {
+            mapped.isRead = !!(mapped.readBy && mapped.readBy.includes(reqEmail));
+        }
 
         res.status(200).json({ success: true, data: mapped });
     } catch (error) {
@@ -347,14 +432,27 @@ exports.deleteNotification = async (req, res) => {
 
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
-        
-        // Only admins/mods can delete global notifications
-        if (notification.email === "all" && !isPrivileged) {
+        const reqEmail = requester.email.toLowerCase();
+        const sender = notification.senderEmail && String(notification.senderEmail).trim();
+
+        // System global broadcast (no sender): only staff may remove the row
+        if (notification.email === "all" && !isPrivileged && !sender) {
             return res.status(403).json({ success: false, message: "Forbidden: cannot delete global notification" });
         }
 
-        if (!isPrivileged && notification.email !== "all" && notification.email !== requester.email.toLowerCase()) {
+        if (!isPrivileged && notification.email !== "all" && notification.email !== reqEmail) {
             return res.status(403).json({ success: false, message: "Forbidden: not your notification" });
+        }
+
+        // User dismisses admin/mod notification (direct or broadcast): inbox + counts only; "Sent by me" unchanged
+        if (!isPrivileged && sender) {
+            if (notification.email === "all" || notification.email === reqEmail) {
+                await Notification.updateOne(
+                    { _id: notification._id },
+                    { $addToSet: { hiddenFor: reqEmail } }
+                );
+                return res.status(200).json({ success: true, data: {} });
+            }
         }
 
         await notification.deleteOne();

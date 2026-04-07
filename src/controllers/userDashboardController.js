@@ -3,17 +3,53 @@ const Notification = require("../models/Notification");
 const UserDashboardStat = require("../models/UserDashboardStat");
 const UserRecentAnswer = require("../models/UserRecentAnswer");
 const { notExpiredWhere } = require("../utils/notificationExpiry");
+const {
+  notHiddenForRecipient,
+  recipientNotInReadBy,
+} = require("../utils/notificationInboxFilters");
 
 const getMyDashboardOverview = async (req, res) => {
   try {
     const userId = req.user?._id;
-    const email = req.user?.email;
+    const emailRaw = req.user?.email;
+    const emailLower = String(emailRaw || "").toLowerCase();
 
     const [user, stats, unreadNotifications] = await Promise.all([
       User.findById(userId),
       UserDashboardStat.findOne({ userId }),
       Notification.countDocuments({
-        $and: [{ email, isRead: false }, notExpiredWhere()],
+        $and: [
+          notExpiredWhere(),
+          notHiddenForRecipient(emailLower),
+          {
+            $or: [
+              {
+                $and: [
+                  { email: emailLower },
+                  {
+                    $or: [
+                      { senderEmail: { $exists: false } },
+                      { senderEmail: null },
+                      { senderEmail: "" },
+                    ],
+                  },
+                  { isRead: false },
+                ],
+              },
+              {
+                $and: [
+                  { email: emailLower },
+                  { senderEmail: { $gt: "" } },
+                  recipientNotInReadBy(emailLower),
+                  { isRead: { $ne: true } },
+                ],
+              },
+              {
+                $and: [{ email: "all" }, recipientNotInReadBy(emailLower)],
+              },
+            ],
+          },
+        ],
       }),
     ]);
 

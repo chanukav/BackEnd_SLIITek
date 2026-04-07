@@ -68,6 +68,11 @@ const notificationSchema = new mongoose.Schema({
     type: [String],
     default: []
   },
+  /** Recipients who dismissed an admin-sent directed notification from their inbox only */
+  hiddenFor: {
+    type: [String],
+    default: [],
+  },
   createdAt: {
     type: Date,
     default: Date.now
