@@ -5,16 +5,15 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const path = require("path");
 
-// Load env variables (root .env first; then otp-gmail-backend/.env fills EMAIL/PASS if missing)
+// Load env variables from monolith root .env
 dotenv.config();
-dotenv.config({ path: path.resolve(__dirname, "../otp-gmail-backend/.env") });
 
 const sendEmail = require("./utils/sendEmail");
 if (sendEmail.isConfigured()) {
   console.log("[EMAIL] OTP mail is configured.");
 } else {
   console.warn(
-    "[EMAIL] OTP mail is NOT configured. Set your real Gmail in EMAIL_USER (root .env) or EMAIL (otp-gmail-backend/.env), and an App Password in EMAIL_PASS or PASS. Placeholder addresses like yourgmail@gmail.com will not work."
+    "[EMAIL] OTP mail is NOT configured. Set EMAIL_USER (or EMAIL) and EMAIL_PASS (or PASS) in BackEnd_SLIITek/.env. If you use Gmail, you must use an App Password (not your normal password)."
   );
 }
 
