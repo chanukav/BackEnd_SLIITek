@@ -2,6 +2,7 @@ const Notification = require('../models/Notification');
 const mongoose = require('mongoose');
 const { addClient, removeClient, pushToClient } = require('../utils/sseClients');
 const { notificationQueue } = require('../queues/notificationQueue');
+const { notExpiredWhere, isNotificationActive } = require('../utils/notificationExpiry');
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -128,9 +129,13 @@ exports.getAllNotifications = async (req, res) => {
         console.log("getAllNotifications query:", req.query);
         console.log("getAllNotifications filter:", filter);
 
+        const activeFilter = Object.keys(filter).length
+            ? { $and: [filter, notExpiredWhere()] }
+            : notExpiredWhere();
+
         const [notifications, total] = await Promise.all([
-            Notification.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
-            Notification.countDocuments(filter),
+            Notification.find(activeFilter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+            Notification.countDocuments(activeFilter),
         ]);
 
         res.status(200).json({
@@ -166,12 +171,17 @@ exports.getUserNotifications = async (req, res) => {
 
         const safe = escapeRegExp(normalizedEmail)
         
-        // Fetch both user-specific notifications and global broadcasts
+        // Fetch both user-specific notifications and global broadcasts (non-expired only)
         const notifications = await Notification.find({
-            $or: [
-                { email: { $regex: `^${safe}$`, $options: "i" } },
-                { email: "all" }
-            ]
+            $and: [
+                notExpiredWhere(),
+                {
+                    $or: [
+                        { email: { $regex: `^${safe}$`, $options: "i" } },
+                        { email: "all" },
+                    ],
+                },
+            ],
         }).sort({ createdAt: -1 }).lean();
 
         // Map isRead for global notifications
@@ -208,15 +218,25 @@ exports.markAllAsRead = async (req, res) => {
 
         const safe = escapeRegExp(normalizedEmail);
         
-        // Update individual notifications
+        // Update individual notifications (active only)
         await Notification.updateMany(
-            { email: { $regex: `^${safe}$`, $options: 'i' }, isRead: false },
+            {
+                $and: [
+                    notExpiredWhere(),
+                    { email: { $regex: `^${safe}$`, $options: "i" }, isRead: false },
+                ],
+            },
             { $set: { isRead: true } }
         );
 
         // Update global notifications
         await Notification.updateMany(
-            { email: "all", readBy: { $ne: normalizedEmail } },
+            {
+                $and: [
+                    notExpiredWhere(),
+                    { email: "all", readBy: { $ne: normalizedEmail } },
+                ],
+            },
             { $push: { readBy: normalizedEmail } }
         );
 
@@ -237,6 +257,10 @@ exports.markAsRead = async (req, res) => {
 
         if (!notification) {
             return res.status(404).json({ success: false, message: "Notification not found" });
+        }
+
+        if (!isNotificationActive(notification)) {
+            return res.status(404).json({ success: false, message: "Notification expired" });
         }
 
         const requester = req.user;
@@ -277,6 +301,10 @@ exports.markAsUnread = async (req, res) => {
             return res.status(404).json({ success: false, message: "Notification not found" });
         }
 
+        if (!isNotificationActive(notification)) {
+            return res.status(404).json({ success: false, message: "Notification expired" });
+        }
+
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && notification.email !== "all" && notification.email !== requester.email.toLowerCase()) {
@@ -311,6 +339,10 @@ exports.deleteNotification = async (req, res) => {
 
         if (!notification) {
             return res.status(404).json({ success: false, message: "Notification not found" });
+        }
+
+        if (!isNotificationActive(notification)) {
+            return res.status(404).json({ success: false, message: "Notification expired" });
         }
 
         const requester = req.user;

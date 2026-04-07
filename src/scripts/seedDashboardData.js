@@ -5,6 +5,7 @@ const User = require("../models/user");
 const Notification = require("../models/Notification");
 const UserDashboardStat = require("../models/UserDashboardStat");
 const UserRecentAnswer = require("../models/UserRecentAnswer");
+const { USER_NOTIFICATION_TTL_MS } = require("../utils/notificationExpiry");
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -105,6 +106,7 @@ const seedDashboardData = async () => {
           title: "Welcome to your dashboard",
           message: "Your personalized dashboard data is now live.",
           isRead: false,
+          expiresAt: new Date(Date.now() + USER_NOTIFICATION_TTL_MS),
         },
       },
       { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
@@ -125,6 +127,7 @@ const seedDashboardData = async () => {
           title: "New activity on your post",
           message: "Someone answered one of your questions.",
           isRead: false,
+          expiresAt: new Date(Date.now() + USER_NOTIFICATION_TTL_MS),
         },
       },
       { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }

@@ -2,6 +2,7 @@ const User = require("../models/user");
 const Notification = require("../models/Notification");
 const UserDashboardStat = require("../models/UserDashboardStat");
 const UserRecentAnswer = require("../models/UserRecentAnswer");
+const { notExpiredWhere } = require("../utils/notificationExpiry");
 
 const getMyDashboardOverview = async (req, res) => {
   try {
@@ -11,7 +12,9 @@ const getMyDashboardOverview = async (req, res) => {
     const [user, stats, unreadNotifications] = await Promise.all([
       User.findById(userId),
       UserDashboardStat.findOne({ userId }),
-      Notification.countDocuments({ email, isRead: false }),
+      Notification.countDocuments({
+        $and: [{ email, isRead: false }, notExpiredWhere()],
+      }),
     ]);
 
     if (!user) {

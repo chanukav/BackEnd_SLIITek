@@ -1,8 +1,8 @@
 const { Worker } = require("bullmq");
 const { redisConnection } = require("../config/redis");
 const Notification = require("../models/Notification");
-const User = require("../models/user");
 const { publisher } = require("../utils/pubsub");
+const { computeExpiresAtFromJobData } = require("../utils/notificationExpiry");
 
 const worker = new Worker(
   "notifications",
@@ -10,7 +10,8 @@ const worker = new Worker(
     const data = job.data;
 
     // 1. Save single notification to DB (even if email is 'all')
-    const notification = await Notification.create(data);
+    const expiresAt = computeExpiresAtFromJobData(data);
+    const notification = await Notification.create({ ...data, expiresAt });
 
     // 2. Push via Redis Pub/Sub instead of direct SSE
     await publisher.publish("notifications", JSON.stringify(notification.toObject()));

@@ -71,7 +71,12 @@ const notificationSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
-  }
+  },
+  /** Auto-set in worker: +14d without senderEmail, +30d when admin senderEmail is set */
+  expiresAt: {
+    type: Date,
+    index: true,
+  },
 });
 
 // Indexes
