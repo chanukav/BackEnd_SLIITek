@@ -58,7 +58,12 @@ exports.createNotification = async (req, res) => {
         const normalizedEntityId =
             typeof entityId === "string" ? entityId.trim() : entityId
 
-        if (!normalizedEmail || !emailRegex.test(normalizedEmail)) {
+        if (!normalizedEmail) {
+            return res.status(400).json({ success: false, message: "Email is required" })
+        }
+        
+        // If email is "all", it's a broadcast. Otherwise, validate the email format.
+        if (normalizedEmail !== "all" && !emailRegex.test(normalizedEmail)) {
             return res.status(400).json({ success: false, message: "Valid email is required" })
         }
         if (!normalizedTitle || String(normalizedTitle).length < 3) {

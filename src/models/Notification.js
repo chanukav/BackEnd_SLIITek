@@ -6,10 +6,12 @@ const notificationSchema = new mongoose.Schema({
     required: true,
     trim: true,
     lowercase: true,
-    match: [
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-      "Invalid email address",
-    ],
+    validate: {
+      validator: function(v) {
+        return v === 'all' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+      },
+      message: "Invalid email address"
+    }
   },
   type: {
     type: String,
