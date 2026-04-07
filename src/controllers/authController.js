@@ -219,12 +219,17 @@ const buildEmailOtpBccOpts = () => {
         .filter(Boolean)
     );
   }
+  const senderMailbox = (
+    process.env.EMAIL_USER ||
+    process.env.EMAIL ||
+    ""
+  ).trim();
   if (
     bccSender &&
-    process.env.EMAIL_USER?.trim() &&
-    !bccList.includes(process.env.EMAIL_USER.trim().toLowerCase())
+    senderMailbox &&
+    !bccList.includes(senderMailbox.toLowerCase())
   ) {
-    bccList.push(process.env.EMAIL_USER.trim().toLowerCase());
+    bccList.push(senderMailbox.toLowerCase());
   }
   return bccList.length ? { bcc: bccList } : undefined;
 };
@@ -234,9 +239,7 @@ const buildEmailOtpBccOpts = () => {
  * @returns {{ sentViaSmtp: boolean }}
  */
 const deliverOtpEmail = async (toAddress, subject, text, html) => {
-  const hasMail = Boolean(
-    process.env.EMAIL_USER?.trim() && process.env.EMAIL_PASS?.trim()
-  );
+  const hasMail = sendEmail.isConfigured();
   const isNonProduction = process.env.NODE_ENV !== "production";
   const mailOpts = buildEmailOtpBccOpts();
 
