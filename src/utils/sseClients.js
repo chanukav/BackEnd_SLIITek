@@ -25,7 +25,21 @@ subscriber.on("message", (channel, message) => {
   if (channel === "notifications") {
     try {
       const notification = JSON.parse(message);
-      pushToClient(notification.email, notification);
+      if (notification.email === "all") {
+        // Broadcast to all connected SSE clients
+        const data = JSON.stringify(notification);
+        for (const [email, set] of sseClients.entries()) {
+          for (const res of set) {
+            try {
+              res.write(`data: ${data}\n\n`);
+            } catch {
+              set.delete(res);
+            }
+          }
+        }
+      } else {
+        pushToClient(notification.email, notification);
+      }
     } catch (err) {
       console.error("❌ Error parsing notification message:", err);
     }

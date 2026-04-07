@@ -13,6 +13,11 @@ const notificationSchema = new mongoose.Schema({
       message: "Invalid email address"
     }
   },
+  senderEmail: {
+    type: String,
+    lowercase: true,
+    trim: true
+  },
   type: {
     type: String,
     enum: ["answer", "comment", "best_answer", "report_update", "announcement"],
@@ -46,6 +51,10 @@ const notificationSchema = new mongoose.Schema({
   isRead: {
     type: Boolean,
     default: false
+  },
+  readBy: {
+    type: [String],
+    default: []
   },
   createdAt: {
     type: Date,

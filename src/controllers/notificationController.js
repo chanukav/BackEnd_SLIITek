@@ -75,6 +75,7 @@ exports.createNotification = async (req, res) => {
 
         const payload = {
             email: normalizedEmail,
+            senderEmail: req.user.email.toLowerCase(),
             type,
             title: normalizedTitle,
             message: normalizedMessage,
@@ -119,6 +120,13 @@ exports.getAllNotifications = async (req, res) => {
             const safe = escapeRegExp(req.query.email.trim().toLowerCase());
             filter.email = { $regex: `^${safe}`, $options: 'i' };
         }
+        if (req.query.senderEmail) {
+            const safe = escapeRegExp(req.query.senderEmail.trim().toLowerCase());
+            filter.senderEmail = { $regex: `^${safe}$`, $options: 'i' };
+        }
+        
+        console.log("getAllNotifications query:", req.query);
+        console.log("getAllNotifications filter:", filter);
 
         const [notifications, total] = await Promise.all([
             Notification.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
@@ -157,10 +165,24 @@ exports.getUserNotifications = async (req, res) => {
         }
 
         const safe = escapeRegExp(normalizedEmail)
+        
+        // Fetch both user-specific notifications and global broadcasts
         const notifications = await Notification.find({
-            email: { $regex: `^${safe}$`, $options: "i" }
-        }).sort({ createdAt: -1 });
-        res.status(200).json({ success: true, count: notifications.length, data: notifications });
+            $or: [
+                { email: { $regex: `^${safe}$`, $options: "i" } },
+                { email: "all" }
+            ]
+        }).sort({ createdAt: -1 }).lean();
+
+        // Map isRead for global notifications
+        const mapped = notifications.map(n => {
+            if (n.email === "all") {
+                n.isRead = n.readBy && n.readBy.includes(normalizedEmail);
+            }
+            return n;
+        });
+
+        res.status(200).json({ success: true, count: mapped.length, data: mapped });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -185,12 +207,21 @@ exports.markAllAsRead = async (req, res) => {
         }
 
         const safe = escapeRegExp(normalizedEmail);
-        const result = await Notification.updateMany(
+        
+        // Update individual notifications
+        await Notification.updateMany(
             { email: { $regex: `^${safe}$`, $options: 'i' }, isRead: false },
             { $set: { isRead: true } }
         );
 
-        res.status(200).json({ success: true, updated: result.modifiedCount });
+        // Update global notifications
+        await Notification.updateMany(
+            { email: "all", readBy: { $ne: normalizedEmail } },
+            { $push: { readBy: normalizedEmail } }
+        );
+
+        // We don't have an exact count of modified global ones easily, but success is true
+        res.status(200).json({ success: true, message: "All notifications marked as read" });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -210,13 +241,25 @@ exports.markAsRead = async (req, res) => {
 
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
-        if (!isPrivileged && notification.email !== requester.email.toLowerCase()) {
+        if (!isPrivileged && notification.email !== "all" && notification.email !== requester.email.toLowerCase()) {
             return res.status(403).json({ success: false, message: "Forbidden: not your notification" });
         }
 
-        notification.isRead = true;
-        await notification.save();
-        res.status(200).json({ success: true, data: notification });
+        if (notification.email === "all") {
+            if (!notification.readBy.includes(requester.email.toLowerCase())) {
+                notification.readBy.push(requester.email.toLowerCase());
+                await notification.save();
+            }
+        } else {
+            notification.isRead = true;
+            await notification.save();
+        }
+
+        // Return mapped version
+        const mapped = notification.toObject();
+        if (mapped.email === "all") mapped.isRead = true;
+
+        res.status(200).json({ success: true, data: mapped });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -236,13 +279,23 @@ exports.markAsUnread = async (req, res) => {
 
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
-        if (!isPrivileged && notification.email !== requester.email.toLowerCase()) {
+        if (!isPrivileged && notification.email !== "all" && notification.email !== requester.email.toLowerCase()) {
             return res.status(403).json({ success: false, message: "Forbidden: not your notification" });
         }
 
-        notification.isRead = false;
-        await notification.save();
-        res.status(200).json({ success: true, data: notification });
+        if (notification.email === "all") {
+            notification.readBy = notification.readBy.filter(e => e !== requester.email.toLowerCase());
+            await notification.save();
+        } else {
+            notification.isRead = false;
+            await notification.save();
+        }
+
+        // Return mapped version
+        const mapped = notification.toObject();
+        if (mapped.email === "all") mapped.isRead = false;
+
+        res.status(200).json({ success: true, data: mapped });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -262,7 +315,13 @@ exports.deleteNotification = async (req, res) => {
 
         const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
-        if (!isPrivileged && notification.email !== requester.email.toLowerCase()) {
+        
+        // Only admins/mods can delete global notifications
+        if (notification.email === "all" && !isPrivileged) {
+            return res.status(403).json({ success: false, message: "Forbidden: cannot delete global notification" });
+        }
+
+        if (!isPrivileged && notification.email !== "all" && notification.email !== requester.email.toLowerCase()) {
             return res.status(403).json({ success: false, message: "Forbidden: not your notification" });
         }
 
