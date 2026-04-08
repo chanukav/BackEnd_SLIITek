@@ -3,10 +3,20 @@ const fs = require("fs");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
+const Question = require("../models/Question");
+const Answer = require("../models/Answer");
+const Comment = require("../models/Comment");
+const AnswerVote = require("../models/AnswerVote");
+const Notification = require("../models/Notification");
+const UserRecentAnswer = require("../models/UserRecentAnswer");
+const UserDashboardStat = require("../models/UserDashboardStat");
+const UserModeration = require("../models/UserModeration");
+const Report = require("../models/Report");
 const {
   generateAccessToken,
   generateRefreshToken,
 } = require("../utils/generateTokens");
+const { deleteBlobIfExists } = require("../utils/azureBlob");
 const sendEmail = require("../utils/sendEmail");
 const {
   normalizePhoneForStorage,
@@ -86,6 +96,27 @@ const removeAvatarFile = (avatarPath) => {
   const abs = path.join(uploadsDir, basename);
   if (fs.existsSync(abs)) {
     fs.unlinkSync(abs);
+  }
+};
+
+const deleteQuestionImageAsset = async (img) => {
+  if (!img) return;
+  if (img.blobName) {
+    try {
+      await deleteBlobIfExists(img.blobName);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  if (typeof img.url === "string" && img.url.startsWith("/uploads/")) {
+    const rel = img.url.replace(/^\/uploads\//, "");
+    const abs = path.join(uploadsDir, rel);
+    const normRoot = path.normalize(uploadsDir + path.sep);
+    const normAbs = path.normalize(abs);
+    if (normAbs.startsWith(normRoot) && fs.existsSync(abs)) {
+      fs.unlinkSync(abs);
+    }
   }
 };
 
@@ -545,6 +576,13 @@ const loginUser = async (req, res) => {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
+      });
+    }
+
+    if (user.isBlocked) {
+      return res.status(403).json({
+        success: false,
+        message: "This account has been blocked. Contact an administrator.",
       });
     }
 
@@ -1113,6 +1151,82 @@ const refreshToken = async (req, res) => {
   }
 };
 
+// ================= DELETE MY ACCOUNT (student users only) =================
+const deleteMyAccount = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+    if (user.role !== "user") {
+      return res.status(403).json({
+        success: false,
+        message: "This account type cannot be deleted here",
+      });
+    }
+
+    const userId = user._id;
+    const email = user.email;
+
+    removeAvatarFile(user.avatar);
+    removeAvatarFile(user.sliitIdPhoto);
+
+    const ownedQuestions = await Question.find({ authorId: userId });
+    for (const question of ownedQuestions) {
+      const answers = await Answer.find({ questionId: question._id }).select("_id");
+      const answerIds = answers.map((a) => a._id);
+      if (answerIds.length) {
+        await Comment.deleteMany({
+          targetType: "answer",
+          targetId: { $in: answerIds },
+        });
+      }
+      await Comment.deleteMany({
+        targetType: "question",
+        targetId: question._id,
+      });
+      await Answer.deleteMany({ questionId: question._id });
+      for (const img of question.images || []) {
+        // eslint-disable-next-line no-await-in-loop
+        await deleteQuestionImageAsset(img);
+      }
+      await question.deleteOne();
+    }
+
+    const remainingAnswers = await Answer.find({ authorId: userId }).select("_id");
+    const remainingAnswerIds = remainingAnswers.map((a) => a._id);
+    if (remainingAnswerIds.length) {
+      await Comment.deleteMany({
+        targetType: "answer",
+        targetId: { $in: remainingAnswerIds },
+      });
+      await AnswerVote.deleteMany({ answerId: { $in: remainingAnswerIds } });
+    }
+    await Answer.deleteMany({ authorId: userId });
+
+    await Comment.deleteMany({ authorId: userId });
+    await AnswerVote.deleteMany({ userId: userId });
+    await UserRecentAnswer.deleteMany({ userId: userId });
+    await UserDashboardStat.deleteMany({ userId: userId });
+    await UserModeration.deleteMany({ userId: String(userId) });
+    await Notification.deleteMany({ email });
+    await Report.deleteMany({ reportedBy: String(userId) });
+
+    res.clearCookie("refreshToken", cookieOptions);
+    await User.deleteOne({ _id: userId });
+
+    return res.status(200).json({
+      success: true,
+      message: "Account deleted",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   registerUser,
   createRoleUser,
@@ -1128,4 +1242,5 @@ module.exports = {
   confirmSignupEmail,
   getMe,
   updateMe,
+  deleteMyAccount,
 };

@@ -20,6 +20,7 @@ const {
   refreshToken,
   getMe,
   updateMe,
+  deleteMyAccount,
 } = require("../controllers/authController");
 
 // Register
@@ -35,6 +36,7 @@ router.post(
 // Current user profile
 router.get("/me", protect, getMe);
 router.patch("/me", protect, uploadAvatar.single("avatar"), updateMe);
+router.delete("/me", protect, deleteMyAccount);
 
 // Sign-up email verification
 router.post("/verify-email/send", sendSignupEmailOtp);
