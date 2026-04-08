@@ -62,6 +62,7 @@ const authRoutes = require("./routes/authRoutes");
 const questionRoutes = require("./routes/questionRoutes");
 const answerRoutes = require("./routes/answerRoutes");
 const userDashboardRoutes = require("./routes/userDashboardRoutes");
+const adminUserRoutes = require("./routes/adminUserRoutes");
 
 // Basic route
 app.get('/', (req, res) => {
@@ -76,6 +77,7 @@ app.use("/api/user-dashboard", userDashboardRoutes);
 // Static folder (uploads)
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 app.use("/api/auth", authRoutes);
+app.use("/api/admin/users", adminUserRoutes);
 app.use("/api/questions", questionRoutes);
 app.use("/api/answers", answerRoutes);
 
