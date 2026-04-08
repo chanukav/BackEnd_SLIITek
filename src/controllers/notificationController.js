@@ -66,7 +66,15 @@ exports.sseStream = (req, res) => {
 // ─────────────────────────────────────────────
 exports.createNotification = async (req, res) => {
     try {
-        const { email, type, title, message, entityType, entityId } = req.body;
+        const { email, type, title, message, entityType, entityId, questionId, answerId } = req.body;
+
+        const allowedTypes = ["answer", "comment", "best_answer", "report_update", "announcement"];
+        if (!type || !allowedTypes.includes(type)) {
+            return res.status(400).json({
+                success: false,
+                message: `type must be one of: ${allowedTypes.join(", ")}`,
+            });
+        }
 
         const normalizedEmail =
             typeof email === "string" ? email.trim().toLowerCase() : email
@@ -78,6 +86,10 @@ exports.createNotification = async (req, res) => {
             typeof entityType === "string" ? entityType.trim() : entityType
         const normalizedEntityId =
             typeof entityId === "string" ? entityId.trim() : entityId
+        const normalizedQuestionId =
+            typeof questionId === "string" ? questionId.trim() : ""
+        const normalizedAnswerId =
+            typeof answerId === "string" ? answerId.trim() : ""
 
         if (!normalizedEmail) {
             return res.status(400).json({ success: false, message: "Email is required" })
@@ -103,6 +115,13 @@ exports.createNotification = async (req, res) => {
             entityType: normalizedEntityType || 'System',
             entityId: normalizedEntityId || new mongoose.Types.ObjectId().toString()
         };
+
+        if (normalizedQuestionId) {
+            payload.questionId = normalizedQuestionId;
+        }
+        if (normalizedAnswerId) {
+            payload.answerId = normalizedAnswerId;
+        }
 
         // Add the notification job to the queue instead of saving directly
         await notificationQueue.add("sendNotification", payload, {
