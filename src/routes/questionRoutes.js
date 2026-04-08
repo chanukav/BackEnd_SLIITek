@@ -5,6 +5,7 @@ const { uploadQuestionImages } = require("../middleware/uploadMiddleware");
 const {
   createQuestion,
   getQuestions,
+  getMyQuestions,
   getQuestionById,
   searchQuestions,
   getQuestionSuggestions,
@@ -19,6 +20,7 @@ const {
 router.get("/", getQuestions);
 router.get("/search", searchQuestions);
 router.get("/suggestions", getQuestionSuggestions);
+router.get("/me", protect, getMyQuestions);
 router.get("/:id", getQuestionById);
 router.post("/", protect, createQuestion);
 router.post("/:id/vote", protect, voteQuestion);

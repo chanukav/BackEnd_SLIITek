@@ -545,12 +545,27 @@ const addCommentToAnswer = async (req, res) => {
   }
 };
 
+const getMyAnswers = async (req, res) => {
+  try {
+    const answers = await Answer.find({ authorId: req.user._id })
+      .populate("questionId", "title status")
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    return res.json(answers);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   postAnswer,
   editAnswer,
   deleteAnswer,
   markBestAnswer,
   getAnswersByQuestion,
+  getMyAnswers,
   voteAnswer,
   unvoteAnswer,
   addCommentToAnswer,

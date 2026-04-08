@@ -7,11 +7,13 @@ const {
   deleteAnswer,
   markBestAnswer,
   getAnswersByQuestion,
+  getMyAnswers,
   voteAnswer,
   unvoteAnswer,
   addCommentToAnswer,
 } = require("../controllers/answerController");
 
+router.get("/me", protect, getMyAnswers);
 router.get("/question/:questionId", getAnswersByQuestion);
 router.post("/:questionId", protect, postAnswer);
 router.put("/:answerId", protect, editAnswer);

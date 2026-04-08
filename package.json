@@ -9,7 +9,8 @@
     "start": "node src/server.js",
     "worker": "node src/workers/notificationWorker.js",
     "seed:users": "node src/scripts/seedUsers.js",
-    "seed:dashboard": "node src/scripts/seedDashboardData.js"
+    "seed:dashboard": "node src/scripts/seedDashboardData.js",
+    "remove:seed-qa": "node src/scripts/removeSeedQuestionsAndAnswers.js"
   },
   "repository": {
     "type": "git",
