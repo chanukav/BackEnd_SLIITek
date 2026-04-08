@@ -141,6 +141,22 @@ const getQuestions = async (req, res) => {
   }
 };
 
+const getMyQuestions = async (req, res) => {
+  try {
+    const questions = await Question.find({ authorId: req.user._id })
+      .populate("authorId", "firstName lastName email role")
+      .populate("bestAnswerId")
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    let out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    out = await attachQuestionCountsAndMyVote(req, out);
+    return res.json(out);
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 const getQuestionById = async (req, res) => {
   try {
     const question = await Question.findById(req.params.id)
@@ -519,6 +535,7 @@ const getQuestionSuggestions = async (req, res) => {
 module.exports = {
   createQuestion,
   getQuestions,
+  getMyQuestions,
   getQuestionById,
   searchQuestions,
   getQuestionSuggestions,
