@@ -1,6 +1,11 @@
 const Report = require("../models/Report");
 const ModerationTarget = require("../models/ModerationTarget");
 const UserModeration = require("../models/UserModeration");
+const User = require("../models/user");
+const { notificationQueue } = require("../queues/notificationQueue");
+const Question = require("../models/Question");
+const Answer = require("../models/Answer");
+const Comment = require("../models/Comment");
 
 const AUTO_HIDE_THRESHOLD = Number(process.env.REPORT_AUTO_HIDE_THRESHOLD || 5);
 const { detectSpam } = require("../utils/spamDetector");
@@ -8,6 +13,29 @@ const { detectSpam } = require("../utils/spamDetector");
 const MAX_DETAILS_LENGTH = Number(process.env.REPORT_MAX_DETAILS_LENGTH || 1000);
 const VALID_ACTIONS = ["none", "removed", "warning", "suspend", "ban"];
 const VALID_STATUSES = ["pending", "reviewed", "dismissed", "action_taken"];
+
+const resolveActionUserId = async (report, providedActionUserId) => {
+    if (providedActionUserId) return providedActionUserId;
+    const targetId = String(report.targetId || "").trim();
+    if (!targetId) return null;
+
+    if (report.targetType === "question") {
+        const question = await Question.findById(targetId).select("authorId");
+        return question?.authorId ? String(question.authorId) : null;
+    }
+
+    if (report.targetType === "answer") {
+        const answer = await Answer.findById(targetId).select("authorId");
+        return answer?.authorId ? String(answer.authorId) : null;
+    }
+
+    if (report.targetType === "comment") {
+        const comment = await Comment.findById(targetId).select("authorId");
+        return comment?.authorId ? String(comment.authorId) : null;
+    }
+
+    return null;
+};
 
 const upsertTargetState = async ({ targetType, targetId, action = "none", actionBy = null }) => {
     const reportCount = await Report.countDocuments({ targetType, targetId });
@@ -30,7 +58,7 @@ const upsertTargetState = async ({ targetType, targetId, action = "none", action
     return ModerationTarget.findOneAndUpdate(
         { targetType, targetId },
         update,
-        { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+        { returnDocument: 'after', upsert: true, runValidators: true, setDefaultsOnInsert: true }
     );
 };
 
@@ -84,9 +112,19 @@ exports.createReport = async (req, res) => {
         });
     } catch (error) {
         if (error && error.code === 11000) {
-            return res.status(409).json({
-                success: false,
-                message: "You have already reported this content"
+            const existingReport = await Report.findOne({
+                targetType: req.body.targetType,
+                targetId: req.body.targetId,
+                reportedBy: req.user ? req.user._id : req.body.reportedBy
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: existingReport || null,
+                meta: {
+                    duplicate: true,
+                    message: "You have already reported this content"
+                }
             });
         }
         return res.status(400).json({ success: false, error: error.message });
@@ -157,10 +195,11 @@ exports.getQueueSummary = async (req, res) => {
 exports.reviewReport = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, action = "none", reviewedBy, moderationNotes = "", actionUserId = null } = req.body;
+        const { status, action = "none", moderationNotes = "", actionUserId = null } = req.body;
+        const reviewedBy = req.user ? req.user._id : req.body.reviewedBy;
 
         if (!reviewedBy) {
-            return res.status(400).json({ success: false, message: "reviewedBy is required" });
+            return res.status(400).json({ success: false, message: "Moderator authentication required (reviewedBy missing)" });
         }
 
         if (status && !VALID_STATUSES.includes(status)) {
@@ -211,11 +250,13 @@ exports.reviewReport = async (req, res) => {
             );
         }
 
-        if (["warning", "suspend", "ban"].includes(action) && actionUserId) {
+        const resolvedActionUserId = await resolveActionUserId(report, actionUserId);
+
+        if (["warning", "suspend", "ban"].includes(action) && resolvedActionUserId) {
             const userModeration = await UserModeration.findOneAndUpdate(
-                { userId: actionUserId },
+                { userId: resolvedActionUserId },
                 {
-                    $setOnInsert: { userId: actionUserId },
+                    $setOnInsert: { userId: resolvedActionUserId },
                     $set: {
                         lastAction: action,
                         lastActionAt: new Date(),
@@ -236,11 +277,30 @@ exports.reviewReport = async (req, res) => {
                         }
                     }
                 },
-                { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
+                { returnDocument: 'after', upsert: true, runValidators: true, setDefaultsOnInsert: true }
             );
             console.log(
-                `[Moderation] User ${actionUserId} received ${action} (moderator: ${reviewedBy}, report: ${report._id})`
+                `[Moderation] User ${resolvedActionUserId} received ${action} (moderator: ${reviewedBy}, report: ${report._id})`
             );
+
+            const actionUser = await User.findById(resolvedActionUserId).select("email");
+            if (actionUser?.email) {
+                const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+                const typeLabel = String(report.targetType || "content").toLowerCase();
+                const notes = typeof moderationNotes === "string" ? moderationNotes.trim() : "";
+                const body = notes
+                    ? `${actionLabel} issued for reported ${typeLabel}. Reason: ${notes}`
+                    : `${actionLabel} issued for reported ${typeLabel}.`;
+
+                await notificationQueue.add("sendNotification", {
+                    email: actionUser.email.toLowerCase(),
+                    type: "report_update",
+                    title: `Moderation ${actionLabel}`,
+                    message: body,
+                    entityType: "Report",
+                    entityId: String(report._id)
+                });
+            }
 
             return res.status(200).json({
                 success: true,
@@ -256,7 +316,8 @@ exports.reviewReport = async (req, res) => {
             moderationTarget: targetUpdate
         });
     } catch (error) {
-        return res.status(400).json({ success: false, error: error.message });
+        console.error("reviewReport Error:", error);
+        return res.status(400).json({ success: false, error: String(error), stack: error.stack, message: error.message });
     }
 };
 

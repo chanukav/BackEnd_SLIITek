@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const moderationTargetSchema = new mongoose.Schema({
   targetType: String,
-  targetId: mongoose.Schema.Types.ObjectId,
+  targetId: String,
 
   reportCount: {
     type: Number,

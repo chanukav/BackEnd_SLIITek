@@ -200,14 +200,17 @@ exports.getAllNotifications = async (req, res) => {
 // ─────────────────────────────────────────────
 exports.getUserNotifications = async (req, res) => {
     try {
-        const { email } = req.params;
-        const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : email
+        const requester = req.user;
+        const requestedEmail = req.params.email;
+        const normalizedEmail =
+            requestedEmail === "me"
+                ? requester.email.toLowerCase()
+                : (typeof requestedEmail === "string" ? requestedEmail.trim().toLowerCase() : requestedEmail);
 
-        if (!normalizedEmail) {
+        if (!normalizedEmail || normalizedEmail === "me") {
             return res.status(400).json({ success: false, message: "Email parameter is required" })
         }
 
-        const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && requester.email.toLowerCase() !== normalizedEmail) {
             return res.status(403).json({ success: false, message: "Forbidden: you can only view your own notifications" });
@@ -242,14 +245,17 @@ exports.getUserNotifications = async (req, res) => {
 // ─────────────────────────────────────────────
 exports.markAllAsRead = async (req, res) => {
     try {
-        const { email } = req.params;
-        const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : email;
+        const requester = req.user;
+        const requestedEmail = req.params.email;
+        const normalizedEmail =
+            requestedEmail === "me"
+                ? requester.email.toLowerCase()
+                : (typeof requestedEmail === "string" ? requestedEmail.trim().toLowerCase() : requestedEmail);
 
-        if (!normalizedEmail) {
+        if (!normalizedEmail || normalizedEmail === "me") {
             return res.status(400).json({ success: false, message: "Email parameter is required" });
         }
 
-        const requester = req.user;
         const isPrivileged = requester.role === 'admin' || requester.role === 'moderator';
         if (!isPrivileged && requester.email.toLowerCase() !== normalizedEmail) {
             return res.status(403).json({ success: false, message: "Forbidden: you can only update your own notifications" });

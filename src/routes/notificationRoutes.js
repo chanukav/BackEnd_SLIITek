@@ -26,6 +26,10 @@ router.route('/')
     .get(authorize('admin', 'moderator'), getAllNotifications)
     .post(authorize('admin', 'moderator'), createNotification);
 
+// Self aliases to avoid client/user-email mismatches
+router.get('/user/me', getUserNotifications);
+router.put('/user/me/read-all', markAllAsRead);
+
 // Any authenticated user — fetch their own; admin/mod can fetch any
 router.route('/user/:email')
     .get(getUserNotifications);

@@ -7,14 +7,13 @@ const reportSchema = new mongoose.Schema({
     required: true
   },
   targetId: {
-    type: mongoose.Schema.Types.ObjectId,
+    type: String,
     required: true,
     index: true
   },
   reportedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true
+    type: String,
+    ref: "User"
   },
   reason: {
     type: String,
