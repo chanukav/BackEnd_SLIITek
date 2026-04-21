@@ -4,6 +4,8 @@ const Question = require("../models/Question");
 const Answer = require("../models/Answer");
 const Comment = require("../models/Comment");
 const ModerationTarget = require("../models/ModerationTarget");
+const User = require("../models/user");
+const { notificationQueue } = require("../queues/notificationQueue");
 const { uploadQuestionImage, deleteBlobIfExists, hydrateQuestionImages } = require("../utils/azureBlob");
 const QuestionVote = require("../models/QuestionVote");
 const mongoose = require("mongoose");
@@ -490,6 +492,24 @@ const voteQuestion = async (req, res) => {
     if (created) {
       question.voteScore = (question.voteScore || 0) + 1;
       await question.save();
+
+      if (String(question.authorId) !== String(req.user._id)) {
+        try {
+          const questionOwner = await User.findById(question.authorId).select("email").lean();
+          if (questionOwner?.email) {
+            await notificationQueue.add("question-liked", {
+              email: questionOwner.email,
+              type: "answer",
+              entityType: "Question",
+              entityId: String(question._id),
+              title: "Question Liked",
+              message: `${req.user.firstName} ${req.user.lastName} liked your question: "${question.title}"`,
+            });
+          }
+        } catch (notifErr) {
+          console.error("Failed to send question-like notification:", notifErr);
+        }
+      }
     }
 
     return res.json({

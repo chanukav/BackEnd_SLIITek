@@ -39,6 +39,50 @@ const isQuestionHidden = async (questionId) => {
   return !!state;
 };
 
+const notifyAnswerLike = async ({ answer, actor }) => {
+  if (!answer?.authorId || !actor?._id) return;
+  if (String(answer.authorId) === String(actor._id)) return;
+
+  const [answerOwner, question] = await Promise.all([
+    User.findById(answer.authorId).select("email").lean(),
+    Question.findById(answer.questionId).select("title").lean(),
+  ]);
+  if (!answerOwner?.email) return;
+
+  await notificationQueue.add("answer-liked", {
+    email: answerOwner.email,
+    type: "answer",
+    entityType: "Answer",
+    entityId: String(answer._id),
+    questionId: String(answer.questionId),
+    answerId: String(answer._id),
+    title: "Answer Liked",
+    message: `${actor.firstName} ${actor.lastName} liked your answer${question?.title ? ` on "${question.title}"` : ""}.`,
+  });
+};
+
+const notifyAnswerDislike = async ({ answer, actor }) => {
+  if (!answer?.authorId || !actor?._id) return;
+  if (String(answer.authorId) === String(actor._id)) return;
+
+  const [answerOwner, question] = await Promise.all([
+    User.findById(answer.authorId).select("email").lean(),
+    Question.findById(answer.questionId).select("title").lean(),
+  ]);
+  if (!answerOwner?.email) return;
+
+  await notificationQueue.add("answer-disliked", {
+    email: answerOwner.email,
+    type: "answer",
+    entityType: "Answer",
+    entityId: String(answer._id),
+    questionId: String(answer.questionId),
+    answerId: String(answer._id),
+    title: "Answer Disliked",
+    message: `${actor.firstName} ${actor.lastName} disliked your answer${question?.title ? ` on "${question.title}"` : ""}.`,
+  });
+};
+
 const postAnswer = async (req, res) => {
   try {
     const { questionId } = req.params;
@@ -446,6 +490,21 @@ const voteAnswer = async (req, res) => {
       answerId: answer._id,
     }).lean();
     const myVote = row ? normalizeVoteValue(row) : 0;
+
+    if (type === "like" && myVote === 1 && prev !== 1) {
+      try {
+        await notifyAnswerLike({ answer, actor: req.user });
+      } catch (notifErr) {
+        console.error("Failed to send answer-like notification:", notifErr);
+      }
+    }
+    if (type === "dislike" && myVote === -1 && prev !== -1) {
+      try {
+        await notifyAnswerDislike({ answer, actor: req.user });
+      } catch (notifErr) {
+        console.error("Failed to send answer-dislike notification:", notifErr);
+      }
+    }
 
     return res.json({
       message: "Vote updated",
