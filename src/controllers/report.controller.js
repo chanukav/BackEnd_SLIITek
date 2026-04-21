@@ -37,6 +37,34 @@ const resolveActionUserId = async (report, providedActionUserId) => {
     return null;
 };
 
+const resolveContextQuestionId = async (report) => {
+    const targetId = String(report.targetId || "").trim();
+    if (!targetId) return null;
+
+    if (report.targetType === "question") return targetId;
+
+    if (report.targetType === "answer") {
+        const answer = await Answer.findById(targetId).select("questionId");
+        return answer?.questionId ? String(answer.questionId) : null;
+    }
+
+    if (report.targetType === "comment") {
+        const comment = await Comment.findById(targetId).select("targetType targetId");
+        if (!comment) return null;
+
+        if (comment.targetType === "question") {
+            return comment.targetId ? String(comment.targetId) : null;
+        }
+
+        if (comment.targetType === "answer") {
+            const parentAnswer = await Answer.findById(comment.targetId).select("questionId");
+            return parentAnswer?.questionId ? String(parentAnswer.questionId) : null;
+        }
+    }
+
+    return null;
+};
+
 const upsertTargetState = async ({ targetType, targetId, action = "none", actionBy = null }) => {
     const reportCount = await Report.countDocuments({ targetType, targetId });
     const shouldAutoHide = AUTO_HIDE_THRESHOLD > 0 && reportCount >= AUTO_HIDE_THRESHOLD;
@@ -149,13 +177,21 @@ exports.getReports = async (req, res) => {
             Report.countDocuments(query)
         ]);
 
+        const data = await Promise.all(
+            reports.map(async (reportDoc) => {
+                const reportObj = reportDoc.toObject();
+                reportObj.contextQuestionId = await resolveContextQuestionId(reportObj);
+                return reportObj;
+            })
+        );
+
         return res.status(200).json({
             success: true,
-            count: reports.length,
+            count: data.length,
             total,
             page: pageNumber,
             pages: Math.ceil(total / pageSize) || 1,
-            data: reports
+            data
         });
     } catch (error) {
         return res.status(400).json({ success: false, error: error.message });
