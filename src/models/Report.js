@@ -7,11 +7,13 @@ const reportSchema = new mongoose.Schema({
     required: true
   },
   targetId: {
-    type: String, // could be ObjectId based on usage, keeping String for generic fallback or if using ObjectId later
-    required: true
+    type: mongoose.Schema.Types.ObjectId,
+    required: true,
+    index: true
   },
   reportedBy: {
-    type: String, // String/ObjectId for user
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
     required: true
   },
   reason: {
@@ -19,46 +21,33 @@ const reportSchema = new mongoose.Schema({
     enum: ["spam", "misinformation", "abuse", "other"],
     required: true
   },
-  details: {
-    type: String,
-    default: ""
-  },
+  details: String,
   status: {
     type: String,
     enum: ["pending", "reviewed", "dismissed", "action_taken"],
-    default: "pending"
+    default: "pending",
+    index: true
   },
   reviewedBy: {
-    type: String, // Mod/Admin userId
-    default: null
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
   },
   action: {
     type: String,
     enum: ["none", "removed", "warning", "suspend", "ban"],
     default: "none"
   },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  reviewedAt: {
-    type: Date,
-    default: null
+  isDeleted: {
+    type: Boolean,
+    default: false
   },
   autoFlagged: {
     type: Boolean,
     default: false
-  },
-  moderationNotes: {
-    type: String,
-    default: ""
   }
-});
+}, { timestamps: true });
 
-// Indexes based on requirements
-reportSchema.index({ status: 1 });
-reportSchema.index({ targetType: 1, targetId: 1 });
-reportSchema.index({ createdAt: -1 });
+// Preserving the unique index from the previous schema so a user can't report the same target multiple times
 reportSchema.index({ targetType: 1, targetId: 1, reportedBy: 1 }, { unique: true });
 
 module.exports = mongoose.model("Report", reportSchema);

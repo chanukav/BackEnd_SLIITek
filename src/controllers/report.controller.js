@@ -3,24 +3,11 @@ const ModerationTarget = require("../models/ModerationTarget");
 const UserModeration = require("../models/UserModeration");
 
 const AUTO_HIDE_THRESHOLD = Number(process.env.REPORT_AUTO_HIDE_THRESHOLD || 5);
-const ENABLE_SPAM_DETECTION = (process.env.REPORT_ENABLE_SPAM_DETECTION || "true") !== "false";
-const BLACKLIST_WORDS = (process.env.REPORT_BLACKLIST_WORDS || "scam,fake,spam,click here")
-    .split(",")
-    .map((w) => w.trim().toLowerCase())
-    .filter(Boolean);
-const MAX_DETAILS_LENGTH = Number(process.env.REPORT_MAX_DETAILS_LENGTH || 1000);
+const { detectSpam } = require("../utils/spamDetector");
 
+const MAX_DETAILS_LENGTH = Number(process.env.REPORT_MAX_DETAILS_LENGTH || 1000);
 const VALID_ACTIONS = ["none", "removed", "warning", "suspend", "ban"];
 const VALID_STATUSES = ["pending", "reviewed", "dismissed", "action_taken"];
-
-const isLikelySpamText = (text = "") => {
-    if (!ENABLE_SPAM_DETECTION || !text) return false;
-    const normalized = String(text).toLowerCase();
-    const repeatedPunctuation = /(.)\1{7,}/.test(normalized);
-    const tooManyLinks = (normalized.match(/https?:\/\//g) || []).length >= 3;
-    const blacklisted = BLACKLIST_WORDS.some((word) => normalized.includes(word));
-    return repeatedPunctuation || tooManyLinks || blacklisted;
-};
 
 const upsertTargetState = async ({ targetType, targetId, action = "none", actionBy = null }) => {
     const reportCount = await Report.countDocuments({ targetType, targetId });
@@ -47,9 +34,12 @@ const upsertTargetState = async ({ targetType, targetId, action = "none", action
     );
 };
 
+const { reportQueue } = require("../queues/reportQueue");
+
 exports.createReport = async (req, res) => {
     try {
-        const { targetType, targetId, reportedBy, reason, details = "" } = req.body;
+        const { targetType, targetId, reason, details = "" } = req.body;
+        const reportedBy = req.user ? req.user._id : req.body.reportedBy;
 
         if (!targetType || !targetId || !reportedBy || !reason) {
             return res.status(400).json({
@@ -65,33 +55,32 @@ exports.createReport = async (req, res) => {
             });
         }
 
-        const autoFlagged = isLikelySpamText(details);
-
         const newReport = await Report.create({
             targetType,
             targetId,
             reportedBy,
             reason,
             details,
-            autoFlagged
+            autoFlagged: false // will be processed by worker
         });
 
-        const targetState = await upsertTargetState({ targetType, targetId });
+        // Add to Redis Queue instead of processing directly
+        await reportQueue.add("process-report", {
+            reportId: newReport._id
+        });
 
-        if (targetState.isHidden) {
-            console.log(
-                `[Auto-Moderation] Content ${targetType}:${targetId} auto-hidden after ${targetState.reportCount} reports`
-            );
+        // Real-Time Moderation: broadcast to admins
+        try {
+            const io = require("../utils/socket").getIO();
+            io.emit("new-report", newReport);
+        } catch (socketErr) {
+            console.error("Socket error on new report:", socketErr);
         }
 
         return res.status(201).json({
             success: true,
             data: newReport,
-            meta: {
-                autoFlagged,
-                targetHidden: targetState.isHidden,
-                reportCount: targetState.reportCount
-            }
+            meta: { message: "Report added to processing queue" }
         });
     } catch (error) {
         if (error && error.code === 11000) {
@@ -201,6 +190,15 @@ exports.reviewReport = async (req, res) => {
             targetId: report.targetId,
             action,
             actionBy: reviewedBy
+        });
+
+        // Audit Logging
+        const AuditLog = require("../models/AuditLog");
+        await AuditLog.create({
+            action: action.toUpperCase() || "REVIEW_REPORT",
+            performedBy: req.user ? req.user._id : reviewedBy,
+            targetId: actionUserId || report.reportedBy || report._id,
+            metadata: { reason: report.reason, reportId: id, details: moderationNotes }
         });
 
         if (action === "removed") {

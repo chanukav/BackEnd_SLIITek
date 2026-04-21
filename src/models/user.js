@@ -84,6 +84,10 @@ const userSchema = new mongoose.Schema(
       enum: ["admin", "moderator", "user"],
       default: "user",
     },
+    trustScore: {
+      type: Number,
+      default: 1
+    },
     /** Set by admins/moderators to prevent sign-in (see admin user API). */
     isBlocked: {
       type: Boolean,

@@ -90,9 +90,19 @@ mongoose
 
     // Initialize the background worker within the monolith
     require("./workers/notificationWorker");
+    require("./workers/reportWorker");
 
     const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () => {
+    const http = require("http");
+    const server = http.createServer(app);
+    
+    // Initialize Socket.io
+    const io = require("./utils/socket").init(server);
+    io.on("connection", (socket) => {
+      console.log("Admin connected to real-time moderation socket.");
+    });
+
+    server.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });
   })

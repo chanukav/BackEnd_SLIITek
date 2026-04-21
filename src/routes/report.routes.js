@@ -1,4 +1,6 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
+const { protect, authorize } = require('../middleware/authMiddleware');
 const {
     createReport,
     getReports,
@@ -10,18 +12,26 @@ const {
 
 const router = express.Router();
 
-// Allow users to submit a report & allow moderators to view all reports
+const reportLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20 // 20 reports per 15 min
+});
+
+// Protect all routes
+router.use(protect);
+
+// Allow logged-in users to submit a report & allow moderators to view all reports
 router.route('/')
-    .get(getReports)
-    .post(createReport);
+    .get(authorize("admin", "moderator"), getReports)
+    .post(reportLimiter, createReport);
 
 // Moderator queue summary (counts + top reported targets)
 router.route('/queue/summary')
-    .get(getQueueSummary);
+    .get(authorize("admin", "moderator"), getQueueSummary);
 
 // Allow moderators to review a report directly
 router.route('/:id/review')
-    .put(reviewReport);
+    .put(authorize("admin", "moderator"), reviewReport);
 
 // Query moderation state for target content
 router.route('/targets/:targetType/:targetId/state')
