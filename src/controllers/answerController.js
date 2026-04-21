@@ -3,6 +3,7 @@ const Question = require("../models/Question");
 const Comment = require("../models/Comment");
 const AnswerVote = require("../models/AnswerVote");
 const User = require("../models/user");
+const ModerationTarget = require("../models/ModerationTarget");
 const { notificationQueue } = require("../queues/notificationQueue");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
@@ -22,6 +23,20 @@ const getUserIdFromAuthHeaderOptional = (req) => {
   } catch {
     return null;
   }
+};
+
+const isStaffUser = (req) => ["admin", "moderator"].includes(req?.user?.role);
+
+const isQuestionHidden = async (questionId) => {
+  if (!questionId) return false;
+  const state = await ModerationTarget.findOne({
+    targetType: "question",
+    targetId: String(questionId),
+    isHidden: true,
+  })
+    .select("_id")
+    .lean();
+  return !!state;
 };
 
 const postAnswer = async (req, res) => {
@@ -51,6 +66,9 @@ const postAnswer = async (req, res) => {
 
     const question = await Question.findById(questionId);
     if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+    if (!isStaffUser(req) && (await isQuestionHidden(question._id))) {
       return res.status(404).json({ message: "Question not found" });
     }
 
@@ -287,6 +305,9 @@ const markBestAnswer = async (req, res) => {
 const getAnswersByQuestion = async (req, res) => {
   try {
     const { questionId } = req.params;
+    if (!isStaffUser(req) && (await isQuestionHidden(questionId))) {
+      return res.json([]);
+    }
 
     // Fetch all answers for the question
     const answers = await Answer.find({ questionId })

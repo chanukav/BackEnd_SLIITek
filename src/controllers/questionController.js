@@ -3,6 +3,7 @@ const fs = require("fs");
 const Question = require("../models/Question");
 const Answer = require("../models/Answer");
 const Comment = require("../models/Comment");
+const ModerationTarget = require("../models/ModerationTarget");
 const { uploadQuestionImage, deleteBlobIfExists, hydrateQuestionImages } = require("../utils/azureBlob");
 const QuestionVote = require("../models/QuestionVote");
 const mongoose = require("mongoose");
@@ -26,6 +27,21 @@ const getUserIdFromAuthHeaderOptional = (req) => {
   } catch {
     return null;
   }
+};
+
+const isStaffUser = (req) => ["admin", "moderator"].includes(req?.user?.role);
+
+const getHiddenQuestionIdSet = async (questionIds) => {
+  if (!Array.isArray(questionIds) || !questionIds.length) return new Set();
+  const uniqueIds = [...new Set(questionIds.map((id) => String(id)).filter(Boolean))];
+  const hiddenTargets = await ModerationTarget.find({
+    targetType: "question",
+    targetId: { $in: uniqueIds },
+    isHidden: true,
+  })
+    .select("targetId")
+    .lean();
+  return new Set(hiddenTargets.map((t) => String(t.targetId)));
 };
 
 const attachQuestionCountsAndMyVote = async (req, questionsPlain) => {
@@ -134,6 +150,10 @@ const getQuestions = async (req, res) => {
       .sort({ createdAt: -1 });
 
     let out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    if (!isStaffUser(req)) {
+      const hiddenSet = await getHiddenQuestionIdSet(out.map((q) => q._id));
+      out = out.filter((q) => !hiddenSet.has(String(q._id)));
+    }
     out = await attachQuestionCountsAndMyVote(req, out);
     return res.json(out);
   } catch (error) {
@@ -150,6 +170,10 @@ const getMyQuestions = async (req, res) => {
       .limit(50);
 
     let out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    if (!isStaffUser(req)) {
+      const hiddenSet = await getHiddenQuestionIdSet(out.map((q) => q._id));
+      out = out.filter((q) => !hiddenSet.has(String(q._id)));
+    }
     out = await attachQuestionCountsAndMyVote(req, out);
     return res.json(out);
   } catch (error) {
@@ -159,6 +183,19 @@ const getMyQuestions = async (req, res) => {
 
 const getQuestionById = async (req, res) => {
   try {
+    if (!isStaffUser(req)) {
+      const hidden = await ModerationTarget.findOne({
+        targetType: "question",
+        targetId: String(req.params.id),
+        isHidden: true,
+      })
+        .select("_id")
+        .lean();
+      if (hidden) {
+        return res.status(404).json({ message: "Question not found" });
+      }
+    }
+
     const question = await Question.findById(req.params.id)
       .populate("authorId", "firstName lastName email role")
       .populate("bestAnswerId");
@@ -319,6 +356,10 @@ const searchQuestions = async (req, res) => {
       .limit(limit);
 
     let out = await Promise.all(questions.map((q) => hydrateQuestionImages(q.toObject())));
+    if (!isStaffUser(req)) {
+      const hiddenSet = await getHiddenQuestionIdSet(out.map((q) => q._id));
+      out = out.filter((q) => !hiddenSet.has(String(q._id)));
+    }
     out = await attachQuestionCountsAndMyVote(req, out);
     return res.json(out);
   } catch (error) {
@@ -520,11 +561,16 @@ const getQuestionSuggestions = async (req, res) => {
     const pattern = `${tokens.map((t) => `(?=.*${escapeRegExp(t)})`).join("")}.*`;
     const titleRegex = new RegExp(pattern, "i");
 
-    const suggestions = await Question.find({ title: { $regex: titleRegex } })
+    let suggestions = await Question.find({ title: { $regex: titleRegex } })
       .select("title category status authorId createdAt")
       .populate("authorId", "firstName lastName")
       .sort({ createdAt: -1 })
       .limit(5);
+
+    if (!isStaffUser(req)) {
+      const hiddenSet = await getHiddenQuestionIdSet(suggestions.map((q) => q._id));
+      suggestions = suggestions.filter((q) => !hiddenSet.has(String(q._id)));
+    }
 
     return res.json(suggestions);
   } catch (error) {

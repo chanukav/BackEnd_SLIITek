@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
+const UserModeration = require("../models/UserModeration");
 
 /** Standard header-based JWT guard — used on all non-SSE routes */
 const protect = async (req, res, next) => {
@@ -23,6 +24,14 @@ const protect = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "User not found",
+      });
+    }
+
+    const moderationState = await UserModeration.findOne({ userId: user._id }).select("isBanned");
+    if (moderationState?.isBanned) {
+      return res.status(403).json({
+        success: false,
+        message: "This account has been banned. Login access is denied.",
       });
     }
 
@@ -57,6 +66,12 @@ const protectSSE = async (req, res, next) => {
     if (!user) {
       res.writeHead(401, { "Content-Type": "text/plain" });
       return res.end("User not found");
+    }
+
+    const moderationState = await UserModeration.findOne({ userId: user._id }).select("isBanned");
+    if (moderationState?.isBanned) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      return res.end("This account has been banned. Login access is denied.");
     }
 
     req.user = user;

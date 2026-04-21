@@ -586,6 +586,16 @@ const loginUser = async (req, res) => {
       });
     }
 
+    const moderationState = await UserModeration.findOne({ userId: user._id }).select("isBanned");
+    if (moderationState?.isBanned) {
+      user.refreshToken = null;
+      await user.save();
+      return res.status(403).json({
+        success: false,
+        message: "This account has been banned. Login access is denied.",
+      });
+    }
+
     if (
       (user.role === "admin" || user.role === "moderator") &&
       !user.isEmailVerified
@@ -1133,6 +1143,17 @@ const refreshToken = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: "Invalid refresh token",
+      });
+    }
+
+    const moderationState = await UserModeration.findOne({ userId: user._id }).select("isBanned");
+    if (moderationState?.isBanned) {
+      user.refreshToken = null;
+      await user.save();
+      res.clearCookie("refreshToken", cookieOptions);
+      return res.status(403).json({
+        success: false,
+        message: "This account has been banned. Login access is denied.",
       });
     }
 

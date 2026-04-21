@@ -3,6 +3,7 @@ const ModerationTarget = require("../models/ModerationTarget");
 const UserModeration = require("../models/UserModeration");
 const User = require("../models/user");
 const { notificationQueue } = require("../queues/notificationQueue");
+const sendEmail = require("../utils/sendEmail");
 const Question = require("../models/Question");
 const Answer = require("../models/Answer");
 const Comment = require("../models/Comment");
@@ -63,6 +64,81 @@ const resolveContextQuestionId = async (report) => {
     }
 
     return null;
+};
+
+const resolveNotificationContext = async (report, contextQuestionId) => {
+    const fallbackQuestionId = contextQuestionId || (await resolveContextQuestionId(report));
+    const payload = {
+        questionId: fallbackQuestionId || null,
+        answerId: null,
+        entityType: "Report",
+        entityId: String(report._id)
+    };
+
+    if (report.targetType === "question" && report.targetId) {
+        payload.entityType = "Question";
+        payload.entityId = String(report.targetId);
+        return payload;
+    }
+
+    if (report.targetType === "answer" && report.targetId) {
+        payload.answerId = String(report.targetId);
+        payload.entityType = "Answer";
+        payload.entityId = String(report.targetId);
+        return payload;
+    }
+
+    if (report.targetType === "comment" && report.targetId) {
+        payload.entityType = "Comment";
+        payload.entityId = String(report.targetId);
+    }
+
+    return payload;
+};
+
+const queueModerationNotification = async ({
+    targetEmail,
+    action,
+    report,
+    moderationNotes,
+    contextQuestionId
+}) => {
+    if (!targetEmail) return;
+    const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+    const typeLabel = String(report.targetType || "content").toLowerCase();
+    const notes = typeof moderationNotes === "string" ? moderationNotes.trim() : "";
+    const body = notes
+        ? `${actionLabel} issued for reported ${typeLabel}. Reason: ${notes}`
+        : `${actionLabel} issued for reported ${typeLabel}.`;
+    const contextPayload = await resolveNotificationContext(report, contextQuestionId);
+
+    await notificationQueue.add("sendNotification", {
+        email: targetEmail.toLowerCase(),
+        type: "report_update",
+        title: `Moderation ${actionLabel}`,
+        message: body,
+        entityType: contextPayload.entityType,
+        entityId: contextPayload.entityId,
+        questionId: contextPayload.questionId,
+        answerId: contextPayload.answerId
+    });
+};
+
+const sendBanEmail = async ({ targetEmail, moderationNotes }) => {
+    if (!targetEmail || !sendEmail.isConfigured()) return;
+    const notes = typeof moderationNotes === "string" ? moderationNotes.trim() : "";
+    const reasonLine = notes ? `Reason: ${notes}` : "Reason: moderation policy violation.";
+    const subject = "Your SLIITEK account has been banned";
+    const text = `Your account has been banned and access is now denied.\n${reasonLine}\nIf you believe this is a mistake, contact support.`;
+    const html = `
+      <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+        <h2 style="color:#b91c1c;">Account Banned</h2>
+        <p style="color:#334155;">Your SLIITEK account has been banned and access is denied.</p>
+        <p style="color:#475569;">${reasonLine}</p>
+        <p style="color:#64748b;font-size:14px;">If this action is incorrect, contact platform support.</p>
+      </div>
+    `;
+    await sendEmail(targetEmail.toLowerCase(), subject, text, html);
 };
 
 const upsertTargetState = async ({ targetType, targetId, action = "none", actionBy = null }) => {
@@ -162,7 +238,7 @@ exports.createReport = async (req, res) => {
 exports.getReports = async (req, res) => {
     try {
         const { status, targetType, reason, page = 1, limit = 20 } = req.query;
-        const query = {};
+        const query = { isDeleted: { $ne: true } };
 
         if (status) query.status = status;
         if (targetType) query.targetType = targetType;
@@ -251,6 +327,7 @@ exports.reviewReport = async (req, res) => {
             return res.status(404).json({ success: false, message: "Report not found" });
         }
 
+        const contextQuestionId = await resolveContextQuestionId(report);
         const finalStatus = status || (action === "none" ? "reviewed" : "action_taken");
 
         report.status = finalStatus;
@@ -258,6 +335,7 @@ exports.reviewReport = async (req, res) => {
         report.reviewedBy = reviewedBy;
         report.reviewedAt = Date.now();
         report.moderationNotes = moderationNotes;
+        report.isDeleted = action === "removed";
         await report.save();
 
         const targetUpdate = await upsertTargetState({
@@ -288,7 +366,7 @@ exports.reviewReport = async (req, res) => {
 
         const resolvedActionUserId = await resolveActionUserId(report, actionUserId);
 
-        if (["warning", "suspend", "ban"].includes(action) && resolvedActionUserId) {
+        if (["warning", "suspend", "ban", "removed"].includes(action) && resolvedActionUserId) {
             const userModeration = await UserModeration.findOneAndUpdate(
                 { userId: resolvedActionUserId },
                 {
@@ -320,22 +398,25 @@ exports.reviewReport = async (req, res) => {
             );
 
             const actionUser = await User.findById(resolvedActionUserId).select("email");
-            if (actionUser?.email) {
-                const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
-                const typeLabel = String(report.targetType || "content").toLowerCase();
-                const notes = typeof moderationNotes === "string" ? moderationNotes.trim() : "";
-                const body = notes
-                    ? `${actionLabel} issued for reported ${typeLabel}. Reason: ${notes}`
-                    : `${actionLabel} issued for reported ${typeLabel}.`;
+            if (action === "ban") {
+                await User.findByIdAndUpdate(resolvedActionUserId, { $set: { refreshToken: null } });
+            }
 
-                await notificationQueue.add("sendNotification", {
-                    email: actionUser.email.toLowerCase(),
-                    type: "report_update",
-                    title: `Moderation ${actionLabel}`,
-                    message: body,
-                    entityType: "Report",
-                    entityId: String(report._id)
+            if (actionUser?.email) {
+                await queueModerationNotification({
+                    targetEmail: actionUser.email,
+                    action,
+                    report,
+                    moderationNotes,
+                    contextQuestionId
                 });
+                if (action === "ban") {
+                    try {
+                        await sendBanEmail({ targetEmail: actionUser.email, moderationNotes });
+                    } catch (mailError) {
+                        console.error(`[Moderation] Ban email send failed for ${actionUser.email}:`, mailError.message);
+                    }
+                }
             }
 
             return res.status(200).json({
