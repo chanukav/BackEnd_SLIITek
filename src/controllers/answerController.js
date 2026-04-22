@@ -289,9 +289,12 @@ const postAnswer = async (req, res) => {
       console.error("Failed to send notifications:", notifErr);
     }
 
+    const answerOut = answer.toObject ? answer.toObject() : answer;
+    const answerHydrated = await hydrateAnswerImages(answerOut);
+
     return res.status(201).json({
       message: "Answer posted successfully",
-      answer,
+      answer: answerHydrated,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -313,12 +316,6 @@ const editAnswer = async (req, res) => {
 
     const trimmedBody = body.trim();
 
-    if (!trimmedBody) {
-      return res
-        .status(400)
-        .json({ message: "Please write an answer before submitting." });
-    }
-
     const answer = await Answer.findById(answerId);
     if (!answer) {
       return res.status(404).json({ message: "Answer not found" });
@@ -330,12 +327,22 @@ const editAnswer = async (req, res) => {
         .json({ message: "Only answer owner can edit this answer" });
     }
 
+    const hasImages = Array.isArray(answer.images) && answer.images.length > 0;
+    if (!trimmedBody && !hasImages) {
+      return res
+        .status(400)
+        .json({ message: "Please write an answer before submitting." });
+    }
+
     answer.body = trimmedBody;
     await answer.save();
 
+    const answerOut = answer.toObject ? answer.toObject() : answer;
+    const answerHydrated = await hydrateAnswerImages(answerOut);
+
     return res.json({
       message: "Answer updated successfully",
-      answer,
+      answer: answerHydrated,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -423,9 +430,11 @@ const markBestAnswer = async (req, res) => {
     question.status = "solved";
     await question.save();
 
+    const answerHydrated = await hydrateAnswerImages(answer.toObject());
+
     return res.json({
       message: "Best answer marked successfully",
-      answer,
+      answer: answerHydrated,
       question,
     });
   } catch (error) {
@@ -443,10 +452,12 @@ const getAnswersByQuestion = async (req, res) => {
       .sort({ voteScore: -1, isBest: -1, createdAt: -1 })
       .lean();
 
+    const answersHydrated = await Promise.all(answers.map((a) => hydrateAnswerImages(a)));
+
     // If user is authenticated, mark which answers are liked by them.
     const userId = getUserIdFromAuthHeaderOptional(req);
-    if (userId && answers.length) {
-      const answerIds = answers.map((a) => a._id);
+    if (userId && answersHydrated.length) {
+      const answerIds = answersHydrated.map((a) => a._id);
       const votes = await AnswerVote.find({
         userId,
         answerId: { $in: answerIds },
@@ -460,14 +471,14 @@ const getAnswersByQuestion = async (req, res) => {
           v.value === -1 ? -1 : 1,
         ])
       );
-      answers.forEach((a) => {
+      answersHydrated.forEach((a) => {
         const mv = voteMap.get(a._id.toString()) ?? 0;
         a.myVote = mv;
         a.likedByMe = mv === 1;
         a.dislikedByMe = mv === -1;
       });
     } else {
-      answers.forEach((a) => {
+      answersHydrated.forEach((a) => {
         a.myVote = 0;
         a.likedByMe = false;
         a.dislikedByMe = false;
@@ -476,14 +487,14 @@ const getAnswersByQuestion = async (req, res) => {
 
     // Build a map of answers by their _id
     const answerMap = {};
-    answers.forEach(ans => {
+    answersHydrated.forEach((ans) => {
       ans.replies = [];
       answerMap[ans._id.toString()] = ans;
     });
 
     // Organize answers into a nested structure
     const nestedAnswers = [];
-    answers.forEach(ans => {
+    answersHydrated.forEach((ans) => {
       if (ans.parentAnswerId) {
         const parent = answerMap[ans.parentAnswerId.toString()];
         if (parent) {

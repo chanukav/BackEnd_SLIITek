@@ -14,10 +14,11 @@ const answerSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Text can be empty when the answer has image(s); API validates text-or-image on create/update.
     body: {
       type: String,
-      required: true,
       trim: true,
+      default: "",
     },
     voteScore: {
       type: Number,
@@ -37,6 +38,13 @@ const answerSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    images: [
+      {
+        url: { type: String, default: "" },
+        blobName: { type: String, default: "" },
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true }
 );

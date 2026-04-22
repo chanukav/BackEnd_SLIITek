@@ -15,7 +15,11 @@ const getEnv = (key) => {
 
 const connectionString = getEnv("AZURE_STORAGE_CONNECTION_STRING");
 const questionImagesContainer = getEnv("AZURE_BLOB_CONTAINER_QUESTION_IMAGES") || "question-images";
-const answerImagesFolderPrefix = getEnv("AZURE_BLOB_ANSWER_IMAGES_PREFIX") || "answers";
+/** Virtual folder for answer uploads inside the same container (separate from `questions/`). */
+const answerImagesRootFolder =
+  getEnv("AZURE_BLOB_ANSWER_IMAGES_FOLDER") ||
+  getEnv("AZURE_BLOB_ANSWER_IMAGES_PREFIX") ||
+  "answer-images";
 const profileImagesFolderPrefix = getEnv("AZURE_BLOB_PROFILE_IMAGES_PREFIX") || "profiles";
 
 const getBlobServiceClient = () => {
@@ -189,8 +193,11 @@ async function uploadAnswerImage({ answerId, userId, buffer, contentType, origin
   const containerClient = blobService.getContainerClient(questionImagesContainer);
   await ensureContainer(containerClient);
 
+  // Same storage account + container as question images, but a dedicated prefix:
+  //   questions/{questionId}/{timestamp}-{random}.ext
+  //   {answerImagesRootFolder}/{answerId}/{timestamp}-{random}.ext
   const blobName = buildBlobName({
-    folder: `${answerImagesFolderPrefix}/${userId}`,
+    folder: answerImagesRootFolder,
     entityId: answerId,
     originalName,
     contentType,
