@@ -16,7 +16,6 @@ const {
   generateAccessToken,
   generateRefreshToken,
 } = require("../utils/generateTokens");
-const { deleteBlobIfExists } = require("../utils/azureBlob");
 const sendEmail = require("../utils/sendEmail");
 const {
   normalizePhoneForStorage,
@@ -28,6 +27,11 @@ const {
   verifyOtpHash,
   OTP_TTL_MS,
 } = require("../utils/emailVerificationOtp");
+const {
+  uploadUserAvatar,
+  deleteBlobIfExists,
+  getViewUrlForQuestionImage,
+} = require("../utils/azureBlob");
 
 const getEmailCategory = (email) => {
   const normalizedEmail = email.toLowerCase().trim();
@@ -88,7 +92,9 @@ const buildProfilePayload = (user) => ({
   sliitIdPhoto: user.sliitIdPhoto || null,
 });
 
-const uploadsDir = path.join(__dirname, "..", "uploads");
+const uploadsDir = path.join(__dirname, "..", "..", "uploads");
+const hasAzureBlobStorage = () =>
+  Boolean(String(process.env.AZURE_STORAGE_CONNECTION_STRING || "").trim());
 
 const removeAvatarFile = (avatarPath) => {
   if (!avatarPath || typeof avatarPath !== "string") return;
@@ -120,6 +126,30 @@ const deleteQuestionImageAsset = async (img) => {
   }
 };
 
+const resolveAvatarViewUrl = async (user) => {
+  if (!user?.avatar) return null;
+  if (user.avatarBlobName) {
+    return (
+      (await getViewUrlForQuestionImage({
+        url: user.avatar,
+        blobName: user.avatarBlobName,
+      })) || user.avatar
+    );
+  }
+  return user.avatar;
+};
+
+const deleteAvatarAsset = async (user) => {
+  if (!user?.avatar) return;
+  if (user.avatarBlobName) {
+    try {
+      await deleteBlobIfExists(user.avatarBlobName);
+    } catch {}
+  } else {
+    removeAvatarFile(user.avatar);
+  }
+};
+
 // ================= CURRENT USER PROFILE =================
 const getMe = async (req, res) => {
   try {
@@ -129,7 +159,10 @@ const getMe = async (req, res) => {
     }
     return res.status(200).json({
       success: true,
-      user: buildProfilePayload(user),
+      user: {
+        ...buildProfilePayload(user),
+        avatar: await resolveAvatarViewUrl(user),
+      },
     });
   } catch (error) {
     return res.status(500).json({
@@ -195,13 +228,37 @@ const updateMe = async (req, res) => {
       clearAvatar === true || clearAvatar === "true" || clearAvatar === "1";
 
     if (shouldClearAvatar) {
-      removeAvatarFile(user.avatar);
+      await deleteAvatarAsset(user);
       user.avatar = null;
+      user.avatarBlobName = "";
     }
 
     if (req.file) {
-      removeAvatarFile(user.avatar);
-      user.avatar = `/uploads/${req.file.filename}`;
+      await deleteAvatarAsset(user);
+      if (hasAzureBlobStorage()) {
+        try {
+          const uploaded = await uploadUserAvatar({
+            userId: user._id.toString(),
+            buffer: req.file.buffer,
+            contentType: req.file.mimetype,
+            originalName: req.file.originalname,
+          });
+          user.avatar = uploaded.url;
+          user.avatarBlobName = uploaded.blobName || "";
+        } catch (e) {
+          return res.status(502).json({
+            success: false,
+            message: "Could not upload profile image to storage.",
+            error: e?.message || "Upload failed",
+          });
+        }
+      } else {
+        return res.status(500).json({
+          success: false,
+          message:
+            "Profile image storage is not configured. Set AZURE_STORAGE_CONNECTION_STRING.",
+        });
+      }
     }
 
     await user.save();
@@ -209,7 +266,10 @@ const updateMe = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Profile updated",
-      user: buildProfilePayload(user),
+      user: {
+        ...buildProfilePayload(user),
+        avatar: await resolveAvatarViewUrl(user),
+      },
     });
   } catch (error) {
     return res.status(500).json({

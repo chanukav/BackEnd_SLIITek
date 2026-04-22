@@ -15,6 +15,8 @@ const getEnv = (key) => {
 
 const connectionString = getEnv("AZURE_STORAGE_CONNECTION_STRING");
 const questionImagesContainer = getEnv("AZURE_BLOB_CONTAINER_QUESTION_IMAGES") || "question-images";
+const answerImagesFolderPrefix = getEnv("AZURE_BLOB_ANSWER_IMAGES_PREFIX") || "answers";
+const profileImagesFolderPrefix = getEnv("AZURE_BLOB_PROFILE_IMAGES_PREFIX") || "profiles";
 
 const getBlobServiceClient = () => {
   if (!connectionString) {
@@ -41,28 +43,45 @@ const parseConnectionString = (cs) => {
 async function getViewUrlForQuestionImage(img) {
   if (!img) return "";
   const stored = typeof img.url === "string" ? img.url.trim() : "";
+  const blobName = typeof img.blobName === "string" ? img.blobName.trim() : "";
 
-  if (img.blobName && connectionString) {
+  if (blobName && connectionString) {
     try {
       const parsed = parseConnectionString(connectionString);
       const accountName = parsed.AccountName;
       const accountKey = parsed.AccountKey;
+      const sharedAccessSignature = String(parsed.SharedAccessSignature || "").trim();
+
+      const blobService = getBlobServiceClient();
+      const containerClient = blobService.getContainerClient(questionImagesContainer);
+      const blobClient = containerClient.getBlobClient(blobName);
+      const fallbackBlobUrl = blobClient.url;
+
+      // If connection string is SAS-based (no account key), reuse that SAS for read URLs.
+      if (!accountKey && sharedAccessSignature) {
+        const sas = sharedAccessSignature.replace(/^\?+/, "");
+        return stored || `${fallbackBlobUrl}?${sas}`;
+      }
+
+      // If we cannot sign (no key), still return a deterministic blob URL.
+      if (!accountKey) {
+        return stored || fallbackBlobUrl;
+      }
       if (!accountName || !accountKey) {
-        return stored;
+        return stored || fallbackBlobUrl;
       }
 
       const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
-      const blobService = getBlobServiceClient();
-      const containerClient = blobService.getContainerClient(questionImagesContainer);
-      const blobClient = containerClient.getBlobClient(img.blobName);
-
       const rawMinutes = parseInt(process.env.AZURE_BLOB_SAS_MINUTES || "120", 10);
-      const sasMinutes = Math.min(Math.max(Number.isFinite(rawMinutes) ? rawMinutes : 120, 5), 7 * 24 * 60);
+      const sasMinutes = Math.min(
+        Math.max(Number.isFinite(rawMinutes) ? rawMinutes : 120, 5),
+        7 * 24 * 60
+      );
 
       const sas = generateBlobSASQueryParameters(
         {
           containerName: questionImagesContainer,
-          blobName: img.blobName,
+          blobName,
           permissions: BlobSASPermissions.parse("r"),
           startsOn: new Date(Date.now() - 5 * 60 * 1000),
           expiresOn: new Date(Date.now() + sasMinutes * 60 * 1000),
@@ -85,15 +104,29 @@ async function hydrateQuestionImages(questionPlain) {
   const images = await Promise.all(
     questionPlain.images.map(async (img) => {
       const viewUrl = await getViewUrlForQuestionImage(img);
-      // For private containers, overwrite url with SAS so ALL existing UIs work.
       return {
         ...img,
-        viewUrl,
-        url: viewUrl || img.url,
+        viewUrl: viewUrl || img.viewUrl || "",
+        url: img.url,
       };
     })
   );
   return { ...questionPlain, images };
+}
+
+async function hydrateAnswerImages(answerPlain) {
+  if (!answerPlain?.images?.length) return answerPlain;
+  const images = await Promise.all(
+    answerPlain.images.map(async (img) => {
+      const viewUrl = await getViewUrlForQuestionImage(img);
+      return {
+        ...img,
+        viewUrl: viewUrl || img.viewUrl || "",
+        url: img.url,
+      };
+    })
+  );
+  return { ...answerPlain, images };
 }
 
 const guessExtension = (originalName = "", contentType = "") => {
@@ -108,11 +141,11 @@ const guessExtension = (originalName = "", contentType = "") => {
   return "";
 };
 
-const buildBlobName = ({ questionId, originalName, contentType }) => {
+const buildBlobName = ({ folder, entityId, originalName, contentType }) => {
   const ext = guessExtension(originalName, contentType);
   const rand = crypto.randomBytes(10).toString("hex");
   const ts = Date.now();
-  return `questions/${questionId}/${ts}-${rand}${ext}`;
+  return `${folder}/${entityId}/${ts}-${rand}${ext}`;
 };
 
 const ensureContainer = async (containerClient) => {
@@ -127,7 +160,69 @@ async function uploadQuestionImage({ questionId, buffer, contentType, originalNa
   const containerClient = blobService.getContainerClient(questionImagesContainer);
   await ensureContainer(containerClient);
 
-  const blobName = buildBlobName({ questionId, originalName, contentType });
+  const blobName = buildBlobName({
+    folder: "questions",
+    entityId: questionId,
+    originalName,
+    contentType,
+  });
+  const blockBlob = containerClient.getBlockBlobClient(blobName);
+
+  await blockBlob.uploadData(buffer, {
+    blobHTTPHeaders: {
+      blobContentType: contentType || "application/octet-stream",
+    },
+  });
+
+  return {
+    blobName,
+    url: blockBlob.url,
+  };
+}
+
+async function uploadAnswerImage({ answerId, userId, buffer, contentType, originalName }) {
+  if (!answerId) throw new Error("answerId is required");
+  if (!userId) throw new Error("userId is required");
+  if (!buffer || !Buffer.isBuffer(buffer)) throw new Error("buffer is required");
+
+  const blobService = getBlobServiceClient();
+  const containerClient = blobService.getContainerClient(questionImagesContainer);
+  await ensureContainer(containerClient);
+
+  const blobName = buildBlobName({
+    folder: `${answerImagesFolderPrefix}/${userId}`,
+    entityId: answerId,
+    originalName,
+    contentType,
+  });
+  const blockBlob = containerClient.getBlockBlobClient(blobName);
+
+  await blockBlob.uploadData(buffer, {
+    blobHTTPHeaders: {
+      blobContentType: contentType || "application/octet-stream",
+    },
+  });
+
+  return {
+    blobName,
+    url: blockBlob.url,
+  };
+}
+
+async function uploadUserAvatar({ userId, buffer, contentType, originalName }) {
+  if (!userId) throw new Error("userId is required");
+  if (!buffer || !Buffer.isBuffer(buffer)) throw new Error("buffer is required");
+
+  const blobService = getBlobServiceClient();
+  const containerClient = blobService.getContainerClient(questionImagesContainer);
+  await ensureContainer(containerClient);
+
+  const blobName = buildBlobName({
+    folder: `${profileImagesFolderPrefix}/${userId}`,
+    entityId: "avatar",
+    originalName,
+    contentType,
+  });
   const blockBlob = containerClient.getBlockBlobClient(blobName);
 
   await blockBlob.uploadData(buffer, {
@@ -152,8 +247,11 @@ async function deleteBlobIfExists(blobName) {
 
 module.exports = {
   uploadQuestionImage,
+  uploadAnswerImage,
+  uploadUserAvatar,
   deleteBlobIfExists,
   getViewUrlForQuestionImage,
   hydrateQuestionImages,
+  hydrateAnswerImages,
 };
 
