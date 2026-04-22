@@ -79,6 +79,11 @@ const userSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    avatarBlobName: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     role: {
       type: String,
       enum: ["admin", "moderator", "user"],

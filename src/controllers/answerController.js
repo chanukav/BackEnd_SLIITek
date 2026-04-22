@@ -1,3 +1,6 @@
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
 const Answer = require("../models/Answer");
 const Question = require("../models/Question");
 const Comment = require("../models/Comment");
@@ -7,9 +10,123 @@ const ModerationTarget = require("../models/ModerationTarget");
 const { notificationQueue } = require("../queues/notificationQueue");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
+const {
+  uploadAnswerImage,
+  deleteBlobIfExists,
+  hydrateAnswerImages,
+} = require("../utils/azureBlob");
+
+// Must match `server.js`: express.static(path.join(__dirname, "..", "uploads")) from `/src`.
+const uploadsRoot = path.join(__dirname, "..", "..", "uploads");
+const MAX_ANSWER_IMAGES = 4;
+const ANSWER_BODY_MAX_LENGTH = 2000;
+const ANSWER_IMAGE_MAX_SIZE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_ANSWER_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
 
 const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
 
+const unlinkUploadUrl = (url) => {
+  if (typeof url !== "string" || !url.startsWith("/uploads/")) return;
+  const rel = url.replace(/^\/uploads\//, "");
+  const abs = path.join(uploadsRoot, rel);
+  const normRoot = path.normalize(uploadsRoot + path.sep);
+  const normAbs = path.normalize(abs);
+  if (!normAbs.startsWith(normRoot)) return;
+  fs.unlink(normAbs, () => {});
+};
+
+const deleteAnswerImageAsset = async (img) => {
+  if (!img) return;
+  if (img.blobName) {
+    try {
+      await deleteBlobIfExists(img.blobName);
+    } catch {}
+    return;
+  }
+  if (img.url) unlinkUploadUrl(img.url);
+};
+
+const hasAzureBlobStorage = () =>
+  Boolean(String(process.env.AZURE_STORAGE_CONNECTION_STRING || "").trim());
+
+/** Saves one buffer to local disk under /uploads/answers/:answerId/ (dev / fallback when Azure fails). */
+async function saveAnswerImageLocal({ answerId, buffer, originalName }) {
+  const idStr = String(answerId);
+  const relDir = path.join("answers", idStr);
+  const dir = path.join(uploadsRoot, relDir);
+  await fs.promises.mkdir(dir, { recursive: true });
+  let ext = path.extname(String(originalName || "")).toLowerCase();
+  const okExt = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+  if (!okExt.has(ext)) ext = ".jpg";
+  const fname = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`;
+  const absFile = path.join(dir, fname);
+  await fs.promises.writeFile(absFile, buffer);
+  return { url: `/uploads/answers/${idStr}/${fname}`, blobName: "" };
+}
+
+const validateAnswerImageFiles = (files) => {
+  const badFile = files.find((f) => {
+    const mime = String(f?.mimetype || "").toLowerCase();
+    const size = Number(f?.size || 0);
+    return !ALLOWED_ANSWER_IMAGE_MIME_TYPES.has(mime) || size <= 0 || size > ANSWER_IMAGE_MAX_SIZE_BYTES;
+  });
+
+  if (!badFile) return "";
+  const mime = String(badFile?.mimetype || "").toLowerCase();
+  if (!ALLOWED_ANSWER_IMAGE_MIME_TYPES.has(mime)) {
+    return "Only JPEG, PNG, GIF, and WebP images are allowed.";
+  }
+  return "Each answer image must be smaller than 5MB.";
+};
+
+async function buildAnswerImageRecords(answerId, userId, files) {
+  const newImages = [];
+  for (const f of files) {
+    let rec;
+    if (hasAzureBlobStorage()) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const uploaded = await uploadAnswerImage({
+          answerId,
+          userId,
+          buffer: f.buffer,
+          contentType: f.mimetype,
+          originalName: f.originalname,
+        });
+        rec = {
+          url: uploaded.url,
+          blobName: uploaded.blobName || "",
+          uploadedAt: new Date(),
+        };
+      } catch (e) {
+        console.error("[answers] Azure upload failed, using local disk:", e?.message);
+        // eslint-disable-next-line no-await-in-loop
+        const loc = await saveAnswerImageLocal({
+          answerId,
+          buffer: f.buffer,
+          originalName: f.originalname,
+        });
+        rec = { url: loc.url, blobName: "", uploadedAt: new Date() };
+      }
+    } else {
+      // eslint-disable-next-line no-await-in-loop
+      const loc = await saveAnswerImageLocal({
+        answerId,
+        buffer: f.buffer,
+        originalName: f.originalname,
+      });
+      rec = { url: loc.url, blobName: "", uploadedAt: new Date() };
+    }
+    newImages.push(rec);
+  }
+  return newImages;
+}
 // Optional auth helper: if `Authorization: Bearer <token>` exists and is valid,
 // returns the userId; otherwise returns null.
 const getUserIdFromAuthHeaderOptional = (req) => {
@@ -86,7 +203,13 @@ const notifyAnswerDislike = async ({ answer, actor }) => {
 const postAnswer = async (req, res) => {
   try {
     const { questionId } = req.params;
-    const { body, parentAnswerId = null } = req.body;
+    const rawBody = req.body?.body;
+    const parentRaw = req.body?.parentAnswerId;
+    const parentAnswerId =
+      parentRaw && String(parentRaw).trim() && String(parentRaw) !== "null"
+        ? String(parentRaw).trim()
+        : null;
+    const files = Array.isArray(req.files) ? req.files : [];
 
     if (!isValidObjectId(questionId)) {
       return res.status(400).json({ message: "That question id doesn’t look valid." });
@@ -96,16 +219,32 @@ const postAnswer = async (req, res) => {
       return res.status(400).json({ message: "That parent answer id doesn’t look valid." });
     }
 
-    if (typeof body !== "string") {
+    if (rawBody != null && typeof rawBody !== "string") {
       return res.status(400).json({ message: "Answer must be plain text." });
     }
 
-    const trimmedBody = body.trim();
+    const trimmedBody = typeof rawBody === "string" ? rawBody.trim() : "";
 
-    if (!trimmedBody) {
-      return res
-        .status(400)
-        .json({ message: "Please write an answer before submitting." });
+    if (!trimmedBody && !files.length) {
+      return res.status(400).json({
+        message: "Please write an answer or attach at least one image.",
+      });
+    }
+
+    if (trimmedBody.length > ANSWER_BODY_MAX_LENGTH) {
+      return res.status(400).json({
+        message: `Answer text must be at most ${ANSWER_BODY_MAX_LENGTH} characters.`,
+      });
+    }
+
+    if (files.length > MAX_ANSWER_IMAGES) {
+      return res.status(400).json({
+        message: `You can attach at most ${MAX_ANSWER_IMAGES} images per answer.`,
+      });
+    }
+    const fileValidationError = validateAnswerImageFiles(files);
+    if (fileValidationError) {
+      return res.status(400).json({ message: fileValidationError });
     }
 
     const question = await Question.findById(questionId);
@@ -136,8 +275,18 @@ const postAnswer = async (req, res) => {
       authorId: req.user._id,
       body: trimmedBody,
       parentAnswerId: parentAnswerId || null,
+      images: [],
     });
 
+    if (files.length) {
+      const newImages = await buildAnswerImageRecords(
+        answer._id.toString(),
+        req.user._id.toString(),
+        files
+      );
+      answer.images = newImages;
+      await answer.save();
+    }
     // --- Notification Logic ---
     try {
       const qAuthor = await User.findById(question.authorId).select("email _id");
@@ -202,9 +351,12 @@ const postAnswer = async (req, res) => {
       console.error("Failed to send notifications:", notifErr);
     }
 
+    const answerOut = answer.toObject ? answer.toObject() : answer;
+    const answerHydrated = await hydrateAnswerImages(answerOut);
+
     return res.status(201).json({
       message: "Answer posted successfully",
-      answer,
+      answer: answerHydrated,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -226,12 +378,6 @@ const editAnswer = async (req, res) => {
 
     const trimmedBody = body.trim();
 
-    if (!trimmedBody) {
-      return res
-        .status(400)
-        .json({ message: "Please write an answer before submitting." });
-    }
-
     const answer = await Answer.findById(answerId);
     if (!answer) {
       return res.status(404).json({ message: "Answer not found" });
@@ -243,12 +389,22 @@ const editAnswer = async (req, res) => {
         .json({ message: "Only answer owner can edit this answer" });
     }
 
+    const hasImages = Array.isArray(answer.images) && answer.images.length > 0;
+    if (!trimmedBody && !hasImages) {
+      return res
+        .status(400)
+        .json({ message: "Please write an answer before submitting." });
+    }
+
     answer.body = trimmedBody;
     await answer.save();
 
+    const answerOut = answer.toObject ? answer.toObject() : answer;
+    const answerHydrated = await hydrateAnswerImages(answerOut);
+
     return res.json({
       message: "Answer updated successfully",
-      answer,
+      answer: answerHydrated,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -336,9 +492,11 @@ const markBestAnswer = async (req, res) => {
     question.status = "solved";
     await question.save();
 
+    const answerHydrated = await hydrateAnswerImages(answer.toObject());
+
     return res.json({
       message: "Best answer marked successfully",
-      answer,
+      answer: answerHydrated,
       question,
     });
   } catch (error) {
@@ -359,10 +517,12 @@ const getAnswersByQuestion = async (req, res) => {
       .sort({ voteScore: -1, isBest: -1, createdAt: -1 })
       .lean();
 
+    const answersHydrated = await Promise.all(answers.map((a) => hydrateAnswerImages(a)));
+
     // If user is authenticated, mark which answers are liked by them.
     const userId = getUserIdFromAuthHeaderOptional(req);
-    if (userId && answers.length) {
-      const answerIds = answers.map((a) => a._id);
+    if (userId && answersHydrated.length) {
+      const answerIds = answersHydrated.map((a) => a._id);
       const votes = await AnswerVote.find({
         userId,
         answerId: { $in: answerIds },
@@ -376,14 +536,14 @@ const getAnswersByQuestion = async (req, res) => {
           v.value === -1 ? -1 : 1,
         ])
       );
-      answers.forEach((a) => {
+      answersHydrated.forEach((a) => {
         const mv = voteMap.get(a._id.toString()) ?? 0;
         a.myVote = mv;
         a.likedByMe = mv === 1;
         a.dislikedByMe = mv === -1;
       });
     } else {
-      answers.forEach((a) => {
+      answersHydrated.forEach((a) => {
         a.myVote = 0;
         a.likedByMe = false;
         a.dislikedByMe = false;
@@ -392,14 +552,14 @@ const getAnswersByQuestion = async (req, res) => {
 
     // Build a map of answers by their _id
     const answerMap = {};
-    answers.forEach(ans => {
+    answersHydrated.forEach((ans) => {
       ans.replies = [];
       answerMap[ans._id.toString()] = ans;
     });
 
     // Organize answers into a nested structure
     const nestedAnswers = [];
-    answers.forEach(ans => {
+    answersHydrated.forEach((ans) => {
       if (ans.parentAnswerId) {
         const parent = answerMap[ans.parentAnswerId.toString()];
         if (parent) {
@@ -416,6 +576,125 @@ const getAnswersByQuestion = async (req, res) => {
   }
 };
 
+const addAnswerImages = async (req, res) => {
+  try {
+    const { answerId } = req.params;
+    const files = Array.isArray(req.files) ? req.files : [];
+
+    if (!isValidObjectId(answerId)) {
+      return res.status(400).json({ message: "That answer id doesn’t look valid." });
+    }
+    if (!files.length) {
+      return res.status(400).json({ message: "No image files uploaded" });
+    }
+
+    const answer = await Answer.findById(answerId);
+    if (!answer) {
+      return res.status(404).json({ message: "Answer not found" });
+    }
+
+    if (answer.authorId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only the answer author can add images" });
+    }
+
+    const question = await Question.findById(answer.questionId);
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+    if (question.status === "locked") {
+      return res.status(403).json({ message: "Question is locked" });
+    }
+
+    const currentCount = (answer.images || []).length;
+    if (currentCount + files.length > MAX_ANSWER_IMAGES) {
+      return res.status(400).json({
+        message: `You can attach at most ${MAX_ANSWER_IMAGES} images per answer`,
+      });
+    }
+    const fileValidationError = validateAnswerImageFiles(files);
+    if (fileValidationError) {
+      return res.status(400).json({ message: fileValidationError });
+    }
+
+    const newImages = await buildAnswerImageRecords(
+      answer._id.toString(),
+      req.user._id.toString(),
+      files
+    );
+
+    answer.images = [...(answer.images || []), ...newImages];
+    await answer.save();
+
+    const populated = await Answer.findById(answer._id)
+      .populate("authorId", "firstName lastName faculty academicYear role")
+      .lean();
+    const hydrated = await hydrateAnswerImages(populated);
+
+    return res.status(201).json({
+      message: "Images uploaded",
+      answer: hydrated,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+const removeAnswerImage = async (req, res) => {
+  try {
+    const { answerId } = req.params;
+    const { url } = req.body;
+
+    if (!url || typeof url !== "string" || !url.trim()) {
+      return res.status(400).json({ message: "Image url is required" });
+    }
+    const trimmedUrl = url.trim();
+
+    if (!isValidObjectId(answerId)) {
+      return res.status(400).json({ message: "That answer id doesn’t look valid." });
+    }
+
+    const answer = await Answer.findById(answerId);
+    if (!answer) {
+      return res.status(404).json({ message: "Answer not found" });
+    }
+
+    if (answer.authorId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only the answer author can remove images" });
+    }
+
+    const images = answer.images || [];
+    const idx = images.findIndex((img) => (img.url || "").trim() === trimmedUrl);
+    if (idx === -1) {
+      return res.status(404).json({ message: "Image not found on this answer" });
+    }
+
+    const remainingAfter = images.length - 1;
+    const hasText = !!(answer.body && answer.body.trim());
+    if (!hasText && remainingAfter === 0) {
+      return res.status(400).json({
+        message: "Add text before removing the last image, or delete the answer instead.",
+      });
+    }
+
+    const [removed] = images.splice(idx, 1);
+    answer.images = images;
+    await answer.save();
+
+    await deleteAnswerImageAsset(removed);
+
+    const populated = await Answer.findById(answer._id)
+      .populate("authorId", "firstName lastName faculty academicYear role")
+      .lean();
+    const hydrated = await hydrateAnswerImages(populated);
+
+    return res.json({
+      message: "Image removed",
+      answer: hydrated,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
 const normalizeVoteValue = (doc) => (doc?.value === -1 ? -1 : 1);
 
 const voteAnswer = async (req, res) => {
@@ -645,6 +924,8 @@ module.exports = {
   deleteAnswer,
   markBestAnswer,
   getAnswersByQuestion,
+  addAnswerImages,
+  removeAnswerImage,
   getMyAnswers,
   voteAnswer,
   unvoteAnswer,
