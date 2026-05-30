@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  backend:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/sliitek-backend:latest
+    container_name: sliitek_backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    restart: always
+
+  frontend:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/sliitek-frontend:latest
+    container_name: sliitek_frontend
+    ports:
+      - "80:80"
+    restart: always
