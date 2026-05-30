@@ -43,7 +43,7 @@ jobs:
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_REGION
         script: |
           if ! command -v aws &> /dev/null; then
-            sudo apt-get update && sudo apt-get install -y awscli
+            sudo snap install aws-cli --classic
           fi
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
           docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/sliitek-backend:latest
