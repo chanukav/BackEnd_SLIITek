@@ -49,4 +49,5 @@ jobs:
           docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/sliitek-backend:latest
           docker stop sliitek_backend || true
           docker rm sliitek_backend || true
-          docker run -d --name sliitek_backend --env-file /home/ubuntu/.env -p 5000:5000 --restart always ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/sliitek-backend:latest
+          docker network create sliitek_net || true
+          docker run -d --name sliitek_backend --network sliitek_net --network-alias backend --env-file /home/ubuntu/.env -p 5000:5000 --restart always ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/sliitek-backend:latest
