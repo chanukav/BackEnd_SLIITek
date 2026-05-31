@@ -47,7 +47,10 @@ jobs:
           fi
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
           docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/sliitek-backend:latest
+          docker stop sliitek_redis || true
+          docker rm sliitek_redis || true
+          docker network create sliitek_net || true
+          docker run -d --name sliitek_redis --network sliitek_net --network-alias redis -p 6379:6379 redis:alpine
           docker stop sliitek_backend || true
           docker rm sliitek_backend || true
-          docker network create sliitek_net || true
-          docker run -d --name sliitek_backend --network sliitek_net --network-alias backend --env-file /home/ubuntu/.env -p 5000:5000 --restart always ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/sliitek-backend:latest
+          docker run -d --name sliitek_backend --network sliitek_net --network-alias backend --env-file /home/ubuntu/.env -e REDIS_HOST=redis -p 5000:5000 --restart always ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/sliitek-backend:latest
