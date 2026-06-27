@@ -62,14 +62,16 @@ pipeline {
 
         stage('Deploy to EC2 via SSH') {
             steps {
-                sshagent(['ec2-ssh-key-id']) { // Configured in Jenkins credentials store
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'ec2-ssh-key-id',
+                    keyFileVariable: 'SSH_KEY_PATH',
+                    usernameVariable: 'SSH_USER'
+                )]) {
                     // Copy docker-compose.prod.yml to EC2 as the default docker-compose.yml
-                    bat "scp -o StrictHostKeyChecking=no docker-compose.prod.yml ${EC2_USER}@${EC2_HOST}:/home/${EC2_USER}/docker-compose.yml"
+                    bat "scp -o StrictHostKeyChecking=no -i \"%SSH_KEY_PATH%\" docker-compose.prod.yml %SSH_USER%@${EC2_HOST}:/home/%SSH_USER%/docker-compose.yml"
                     
                     // Connect to EC2, authenticate with ECR, pull the new image, and run the service
-                    bat """
-                    ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY} && docker compose -f /home/${EC2_USER}/docker-compose.yml pull backend && docker compose -f /home/${EC2_USER}/docker-compose.yml up -d backend && docker image prune -f"
-                    """
+                    bat "ssh -o StrictHostKeyChecking=no -i \"%SSH_KEY_PATH%\" %SSH_USER%@${EC2_HOST} \"aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY} && docker compose -f /home/%SSH_USER%/docker-compose.yml pull backend && docker compose -f /home/%SSH_USER%/docker-compose.yml up -d backend && docker image prune -f\""
                 }
             }
         }
