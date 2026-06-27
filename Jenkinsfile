@@ -71,7 +71,7 @@ pipeline {
                     bat 'scp -o StrictHostKeyChecking=no -i "%SSH_KEY_PATH%" docker-compose.prod.yml %SSH_USER%@%EC2_HOST%:/home/%SSH_USER%/docker-compose.yml'
                     
                     // Connect to EC2, authenticate with ECR, pull the new image, and run the service
-                    bat 'ssh -o StrictHostKeyChecking=no -i "%SSH_KEY_PATH%" %SSH_USER%@%EC2_HOST% "aws ecr get-login-password --region %AWS_DEFAULT_REGION% | docker login --username AWS --password-stdin %ECR_REGISTRY% && docker compose -f /home/%SSH_USER%/docker-compose.yml pull backend && docker compose -f /home/%SSH_USER%/docker-compose.yml up -d backend && docker image prune -f"'
+                    bat 'ssh -o StrictHostKeyChecking=no -i "%SSH_KEY_PATH%" %SSH_USER%@%EC2_HOST% "export AWS_ACCOUNT_ID=%AWS_ACCOUNT_ID% && export AWS_REGION=%AWS_DEFAULT_REGION% && aws ecr get-login-password --region %AWS_DEFAULT_REGION% | docker login --username AWS --password-stdin %ECR_REGISTRY% && docker compose -f /home/%SSH_USER%/docker-compose.yml pull backend && docker compose -f /home/%SSH_USER%/docker-compose.yml up -d backend && docker image prune -f"'
                 }
             }
         }
