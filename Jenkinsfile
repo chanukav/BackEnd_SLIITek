@@ -38,7 +38,7 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                bat "docker build -t ${ECR_REPOSITORY}:${IMAGE_TAG} ."
+                bat 'docker build -t %ECR_REPOSITORY%:%IMAGE_TAG% .'
             }
         }
 
@@ -48,15 +48,15 @@ pipeline {
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws-credentials-id' // Configured in Jenkins credentials store
                 ]]) {
-                    bat "aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
+                    bat 'aws ecr get-login-password --region %AWS_DEFAULT_REGION% | docker login --username AWS --password-stdin %ECR_REGISTRY%'
                 }
             }
         }
 
         stage('Push Image to ECR') {
             steps {
-                bat "docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-                bat "docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+                bat 'docker tag %ECR_REPOSITORY%:%IMAGE_TAG% %ECR_REGISTRY%/%ECR_REPOSITORY%:%IMAGE_TAG%'
+                bat 'docker push %ECR_REGISTRY%/%ECR_REPOSITORY%:%IMAGE_TAG%'
             }
         }
 
@@ -68,10 +68,10 @@ pipeline {
                     usernameVariable: 'SSH_USER'
                 )]) {
                     // Copy docker-compose.prod.yml to EC2 as the default docker-compose.yml
-                    bat "scp -o StrictHostKeyChecking=no -i \"%SSH_KEY_PATH%\" docker-compose.prod.yml %SSH_USER%@${EC2_HOST}:/home/%SSH_USER%/docker-compose.yml"
+                    bat 'scp -o StrictHostKeyChecking=no -i "%SSH_KEY_PATH%" docker-compose.prod.yml %SSH_USER%@%EC2_HOST%:/home/%SSH_USER%/docker-compose.yml'
                     
                     // Connect to EC2, authenticate with ECR, pull the new image, and run the service
-                    bat "ssh -o StrictHostKeyChecking=no -i \"%SSH_KEY_PATH%\" %SSH_USER%@${EC2_HOST} \"aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY} && docker compose -f /home/%SSH_USER%/docker-compose.yml pull backend && docker compose -f /home/%SSH_USER%/docker-compose.yml up -d backend && docker image prune -f\""
+                    bat 'ssh -o StrictHostKeyChecking=no -i "%SSH_KEY_PATH%" %SSH_USER%@%EC2_HOST% "aws ecr get-login-password --region %AWS_DEFAULT_REGION% | docker login --username AWS --password-stdin %ECR_REGISTRY% && docker compose -f /home/%SSH_USER%/docker-compose.yml pull backend && docker compose -f /home/%SSH_USER%/docker-compose.yml up -d backend && docker image prune -f"'
                 }
             }
         }
