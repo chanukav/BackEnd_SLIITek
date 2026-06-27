@@ -7,15 +7,13 @@ pipeline {
         ECR_REGISTRY       = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
         ECR_REPOSITORY     = 'sliitek-backend'
         IMAGE_TAG          = 'latest'
-        EC2_HOST           = env.EC2_HOST_IP                // Retrieve from Jenkins Global Environment Variables
+        EC2_HOST           = "${env.EC2_HOST_IP}"           // Retrieve from Jenkins Global Environment Variables
         EC2_USER           = 'ubuntu'
     }
-
 
     options {
         timeout(time: 1, unit: 'HOURS')
         ansiColor('xterm')
-        keepStepStatuses()
     }
 
     stages {
