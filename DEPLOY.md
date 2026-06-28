@@ -98,20 +98,25 @@ In the software industry, manually typing secrets into a `.env` file on a server
    - *(Optional parameters like `AZURE_BLOB_CONTAINER_QUESTION_IMAGES` can also be added here)*
 
 #### Step B: Attach an IAM Role to the EC2 Instance
-To grant the EC2 instance read-only access to these parameters:
+To grant the EC2 instance access to the AWS Parameter Store and ECR registries:
 1. Open the **IAM Console** > **Roles** > **Create role**.
 2. Select **AWS Service** and choose **EC2**.
-3. Attach the policy **`AmazonSSMReadOnlyAccess`** (or create a custom policy restricting actions to `ssm:GetParametersByPath` on `arn:aws:ssm:*:*:parameter/sliitek/prod/*`).
+3. Attach the following managed policies:
+   - **`AmazonSSMReadOnlyAccess`** (to read SSM secrets)
+   - **`AmazonEC2ContainerRegistryReadOnly`** (to pull Docker images from AWS ECR)
 4. Name the role `sliitek-ec2-ssm-role` and click **Create**.
 5. Go to the **EC2 Console** > **Instances**, select your instance, and choose **Actions** > **Security** > **Modify IAM role**. Select `sliitek-ec2-ssm-role` and save.
 
+> [!WARNING]
+> **Permissions Boundary Error:** If you hit an `AccessDeniedException` when running ECR login on the EC2 instance, check if a **Permissions Boundary** is set on the `sliitek-ec2-ssm-role` in the IAM Console. Either remove the boundary or update it to explicitly allow `ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:GetDownloadUrlForLayer`, and `ecr:BatchGetImage`.
+
 #### Step C: Dynamically Build the `.env` File on EC2
-Instead of creating the file manually, log into the EC2 instance and run this command to pull the secrets securely and build the `.env` file on the fly:
+Instead of creating the file manually, log into the EC2 instance and run this command to pull the secrets securely from SSM and build the `.env` file on the fly (targeting the `ap-south-1` region):
 ```bash
 aws ssm get-parameters-by-path \
   --path "/sliitek/prod/" \
   --with-decryption \
-  --region us-east-1 | python3 -c "
+  --region ap-south-1 | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for p in data.get('Parameters', []):
@@ -127,43 +132,65 @@ chmod 600 /home/ubuntu/.env
 
 ## ⚙️ Step 2: Jenkins Server Configuration
 
-The CI/CD build process runs on your Jenkins server to offload resource consumption from the `t2.micro` host.
+The CI/CD build process runs on your Jenkins server to offload resource consumption from the `t2.micro` host. 
 
-### 1. Install Required Plugins
-Navigate to **Manage Jenkins** > **Plugins** > **Available Plugins** and install:
-- **CloudBees AWS Credentials** (for ECR authentication)
-- **SSH Agent** (for SSH & SCP deployments)
-- **Pipeline: Utility Steps**
-- **AnsiColor** (optional, for colorized logs)
+> [!IMPORTANT]
+> **Windows Agent Compatibility:** Because the Jenkins agent is running on a **Windows** host, the pipeline is written using native Windows batch (`bat`) commands instead of standard POSIX shell (`sh`) commands.
 
-### 2. Configure Credentials
+### 1. Configure System Environment Path in Jenkins
+To ensure Jenkins can find your Git Bash shell utilities (like `ssh` and `scp`) when running batch commands:
+1. Go to the Jenkins Dashboard.
+2. Click **Manage Jenkins** > **System**.
+3. Scroll to **Global properties** -> check **Environment variables**.
+4. Click **Add** to configure:
+   - **Name:** `PATH+GIT_BIN`
+   - **Value:** `C:\Program Files\Git\bin`
+5. Click **Add** to configure:
+   - **Name:** `PATH+GIT_USR_BIN`
+   - **Value:** `C:\Program Files\Git\usr\bin`
+6. Click **Save**.
+
+### 2. Configure Credentials in Jenkins
 Navigate to **Manage Jenkins** > **Credentials** > **System** > **Global credentials** and add:
 
-1. **AWS Credentials**:
+1. **AWS Account ID**:
+   - Kind: `Secret text`
+   - ID: `AWS_ACCOUNT_ID` (Matches the credentials reference in `Jenkinsfile`)
+   - Secret: `YOUR_12_DIGIT_AWS_ACCOUNT_ID`
+
+2. **AWS CLI Programmatic Credentials**:
    - Kind: `AWS Credentials`
    - ID: `aws-credentials-id` (Matches the value in `Jenkinsfile`)
-   - Access Key ID: `YOUR_AWS_ACCESS_KEY_ID`
-   - Secret Access Key: `YOUR_AWS_SECRET_ACCESS_KEY`
+   - Access Key ID & Secret Access Key: `YOUR_AWS_ACCESS_KEYS`
 
-2. **EC2 SSH Private Key**:
+3. **EC2 SSH Private Key**:
    - Kind: `SSH Username with private key`
    - ID: `ec2-ssh-key-id` (Matches the value in `Jenkinsfile`)
    - Username: `ubuntu`
    - Private Key: Click `Enter directly` and paste the contents of your EC2 `.pem` private key file.
 
-### 3. Update Pipeline Environment Variables
-Ensure the following variables in the [Jenkinsfile](file:///d:/SLIITek/BackEnd_SLIITek/Jenkinsfile) environment block match your setup:
+### 3. Configure Jenkins Global Environment Variables
+To keep your pipeline code clean and generic:
+1. Under **Global properties** -> **Environment variables** (configured in the System dashboard), add:
+   - **Name:** `EC2_HOST_IP`
+   - **Value:** Your EC2 Instance's public IP address (e.g., `65.2.179.56`).
+
+### 4. Update Pipeline Environment Variables
+Ensure the following variables in the [Jenkinsfile](file:///d:/SLIITek/BackEnd_SLIITek/Jenkinsfile) environment block match your setup (secrets and IPs are dynamically fetched at runtime to prevent code hardening):
 ```groovy
 environment {
-    AWS_ACCOUNT_ID     = '123456789012'       // Your AWS Account ID
-    AWS_DEFAULT_REGION = 'us-east-1'           // Your target AWS ECR region
+    AWS_ACCOUNT_ID     = credentials('AWS_ACCOUNT_ID') // Retrieve from Jenkins Credentials Store
+    AWS_DEFAULT_REGION = 'ap-south-1'                  // Target AWS ECR region
     ECR_REGISTRY       = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-    ECR_REPOSITORY     = 'sliitek-backend'     // Matches your AWS ECR repo name
+    ECR_REPOSITORY     = 'sliitek-backend'             // Matches AWS ECR repo name
     IMAGE_TAG          = 'latest'
-    EC2_HOST           = '54.xxx.xxx.xxx'      // Your EC2 public IP or DNS
+    EC2_HOST           = "${env.EC2_HOST_IP}"           // Retrieve from Jenkins Global Environment Variables
     EC2_USER           = 'ubuntu'
 }
 ```
+
+> [!NOTE]
+> **SSH Agent Plugin Bypass:** The Jenkins `sshagent` plugin has a known Windows compatibility bug that throws parsing errors during environment setup. The pipeline is securely configured to use `withCredentials` and `sshUserPrivateKey` to load the private key into a secure temporary file (`SSH_KEY_PATH`) and pass it to SSH/SCP directly using the `-i` parameter.
 
 ---
 

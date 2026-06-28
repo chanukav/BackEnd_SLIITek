@@ -64,6 +64,15 @@ const answerRoutes = require("./routes/answerRoutes");
 const userDashboardRoutes = require("./routes/userDashboardRoutes");
 const adminUserRoutes = require("./routes/adminUserRoutes");
 
+// Health check route
+app.get('/api/health', (req, res) => {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
+    if (dbStatus === 'DOWN') {
+        return res.status(500).json({ status: 'DOWN', database: dbStatus });
+    }
+    res.status(200).json({ status: 'UP', database: dbStatus, timestamp: new Date() });
+});
+
 // Basic route
 app.get('/', (req, res) => {
     res.send('API is running...');
