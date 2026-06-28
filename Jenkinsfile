@@ -55,8 +55,10 @@ pipeline {
 
         stage('Push Image to ECR') {
             steps {
-                bat 'docker tag %ECR_REPOSITORY%:%IMAGE_TAG% %ECR_REGISTRY%/%ECR_REPOSITORY%:%IMAGE_TAG%'
-                bat 'docker push %ECR_REGISTRY%/%ECR_REPOSITORY%:%IMAGE_TAG%'
+                retry(3) {
+                    bat 'docker tag %ECR_REPOSITORY%:%IMAGE_TAG% %ECR_REGISTRY%/%ECR_REPOSITORY%:%IMAGE_TAG%'
+                    bat 'docker push %ECR_REGISTRY%/%ECR_REPOSITORY%:%IMAGE_TAG%'
+                }
             }
         }
 
