@@ -215,25 +215,27 @@ environment {
 ## 🛠️ Step 4: Verification & Troubleshooting
 
 ### 1. Database Seeding
-To populate initial metadata, run the seeding scripts inside the backend container:
+To populate initial metadata, run the seeding scripts inside one of the backend containers (e.g., `sliitek_backend_a`):
 ```bash
 # SSH into the EC2 instance and execute:
-docker exec -it sliitek_backend npm run seed:users
-docker exec -it sliitek_backend npm run seed:dashboard
+docker exec -it sliitek_backend_a npm run seed:users
+docker exec -it sliitek_backend_a npm run seed:dashboard
 ```
 
 ### 2. Verify Container Logs
-To inspect backend logs and ensure express is running:
+To inspect backend logs and ensure Express is running:
 ```bash
-docker logs -f sliitek_backend
+docker logs -f sliitek_backend_a
+# or
+docker logs -f sliitek_backend_b
 ```
 Look for: `Server running on port 5000` or database connection success logs.
 
 ### 3. Check Network and Ports
-Ensure the `sliitek_net` network and both the backend and local Redis services are running correctly:
+Ensure the `sliitek_net` network and both the backend nodes and local Redis services are running correctly:
 ```bash
 docker ps
-# Output should show sliitek_backend on port 5000 and sliitek_redis on port 6379
+# Output should show sliitek_backend_a and sliitek_backend_b on port 5000, and sliitek_redis on port 6379
 ```
 
 ---
