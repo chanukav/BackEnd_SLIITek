@@ -194,21 +194,38 @@ environment {
 
 ---
 
-## 🚀 Step 3: Run the Jenkins Pipeline
+## 🚀 Step 3: Configure Triggers & Run the Jenkins Pipeline
 
-1. In Jenkins, create a **Pipeline** project pointing to the backend Git repository.
-2. Trigger the build manually or set up a Git webhook.
-3. The pipeline will automatically:
-   - Perform a clean workspace checkout.
-   - Run tests (`npm install` followed by `npm test`).
-   - Build a production Docker image using `Dockerfile`.
-   - Log into ECR and push the built image.
-   - SCP `docker-compose.prod.yml` to the EC2 host as `/home/ubuntu/docker-compose.yml`.
-   - SSH into the EC2 host, log in to ECR, pull the new image, and run the service:
-     ```bash
-     docker compose -f /home/ubuntu/docker-compose.yml up -d backend
-     ```
-   - Prune old dangling images on the EC2 host.
+The pipeline is configured with a `triggers` block to support automated error checking on code pushes.
+
+### 1. Configure Automatic Push Triggers (Webhooks)
+To have Jenkins automatically trigger builds when you push commits to GitHub:
+1. **In Jenkins**:
+   - Go to your Pipeline job configuration.
+   - Under **Build Triggers**, check **GitHub hook trigger for GITScm polling**.
+2. **In GitHub**:
+   - Go to your repository settings page.
+   - Click **Webhooks** > **Add webhook**.
+   - Set **Payload URL** to `http://<your-jenkins-server-url>/github-webhook/` (ensure the trailing slash is included).
+   - Set **Content type** to `application/json`.
+   - Choose **Just the push event** and click **Add webhook**.
+
+*Note: SCM polling (`pollSCM`) is configured in the `Jenkinsfile` as a fallback to poll the repository for changes every 5 minutes if webhooks are not set up.*
+
+### 2. Multi-Branch Pipeline & Validation Behavior
+To protect the production environment, the pipeline behaves differently based on the branch being built:
+- **All Branches**: Upon push, the pipeline will run full validation tests (`npm install` followed by `npm test`) to check whether there are any errors. If any tests fail, the build fails and you are immediately notified.
+- **`main` Branch Only**: If the branch is `main`, the pipeline proceeds to build the Docker image, push it to AWS ECR, and deploy it to the EC2 host. For other branches, these deployment steps are skipped.
+
+### 3. Pipeline Execution Flow
+When a build is triggered, the pipeline:
+1. Performs a clean workspace checkout.
+2. Runs validation tests (`npm install` followed by `npm test`).
+3. (If branch is `main`) Builds a production Docker image using `Dockerfile`.
+4. (If branch is `main`) Logs into ECR and pushes the built image.
+5. (If branch is `main`) SCPs `docker-compose.prod.yml` to the EC2 host as `/home/ubuntu/docker-compose.yml`.
+6. (If branch is `main`) SSHes into the EC2 host, logs in to ECR, pulls the new image, performs rolling updates, and deploys.
+7. (If branch is `main`) Prunes old dangling images on the EC2 host.
 
 ---
 
