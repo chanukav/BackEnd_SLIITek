@@ -17,7 +17,6 @@ pipeline {
 
     triggers {
         githubPush() // Trigger on GitHub push events webhook
-        pollSCM('H/5 * * * *') // Fallback polling every 5 minutes if webhooks are not set up
     }
 
     stages {
