@@ -6,7 +6,7 @@ pipeline {
         AWS_DEFAULT_REGION = 'ap-south-1'
         ECR_REPOSITORY     = 'sliitek-backend'
         IMAGE_TAG          = "build-${env.BUILD_NUMBER}"
-        EC2_HOST           = "${env.EC2_HOST_IP}"           // Retrieve from Jenkins Global Environment Variables
+        EC2_HOST           = "${env.EC2_HOST_IP_SLIITEK}"           // Retrieve from Jenkins Global Environment Variables
         EC2_USER           = 'ubuntu'
     }
 
