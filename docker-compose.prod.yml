@@ -48,7 +48,7 @@ services:
     image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/sliitek-frontend:${FRONTEND_IMAGE_TAG:-latest}
     container_name: sliitek_frontend
     ports:
-      - "80:80"
+      - "3000:80"
     restart: always
     depends_on:
       - backend_a
@@ -59,4 +59,3 @@ services:
 networks:
   sliitek_net:
     driver: bridge
-

@@ -209,7 +209,8 @@ To have Jenkins automatically trigger builds when you push commits to GitHub:
    - Set **Content type** to `application/json`.
    - Choose **Just the push event** and click **Add webhook**.
 
-*Note: SCM polling (`pollSCM`) is configured in the `Jenkinsfile` as a fallback to poll the repository for changes every 5 minutes if webhooks are not set up.*
+> [!TIP]
+> To skip pipeline triggers for documentation-only pushes (e.g., `.md` files), configure **"Polling ignores commits in certain paths"** under **Additional Behaviours** in the Jenkins job's Git SCM section, with the excluded pattern `.*\.md`.
 
 ### 2. Multi-Branch Pipeline & Validation Behavior
 To protect the production environment, the pipeline behaves differently based on the branch being built:
