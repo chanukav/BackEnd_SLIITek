@@ -6,7 +6,22 @@ const cookieParser = require("cookie-parser");
 const path = require("path");
 
 // Load env variables from monolith root .env
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, "..", ".env") });
+
+if (!process.env.MONGO_URI) {
+  console.error("FATAL ERROR: MONGO_URI is not defined in environment variables.");
+  process.exit(1);
+}
+
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === "production") {
+    console.error("FATAL ERROR: JWT_SECRET is not defined.");
+    process.exit(1);
+  } else {
+    console.warn("WARNING: JWT_SECRET is not defined. Using development fallback secret.");
+    process.env.JWT_SECRET = "dev-fallback-secret-key-12345";
+  }
+}
 
 const sendEmail = require("./utils/sendEmail");
 if (sendEmail.isConfigured()) {
