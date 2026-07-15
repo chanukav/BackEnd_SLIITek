@@ -8,6 +8,7 @@ pipeline {
         IMAGE_TAG          = "build-${env.BUILD_NUMBER}"
         EC2_HOST           = "${env.EC2_HOST_IP_SLIITEK}"           // Retrieve from Jenkins Global Environment Variables
         EC2_USER           = 'ubuntu'
+        DOCKER_HOST        = 'tcp://localhost:2375'
     }
 
     options {
